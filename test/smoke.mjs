@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { Ops } from '../src/ops.ts';
 import { gitOp as git } from '../src/git.ts';
 import { fetchUrl as fetchTool } from '../src/net.ts';
+import { readStashed, summarizeIfLong } from '../src/results.ts';
 
 const ops = new Ops();
 const root = mkdtempSync(join(tmpdir(), 'ops-smoke-'));
@@ -299,6 +300,22 @@ try {
   check('git push 先打印计划再推', gPush.includes('[plan] 将推送') && gPush.includes('[ok git push]'), gPush);
   const outside = await git({ path: repoDir, mode: 'add', paths: ['C:\\Windows\\win.ini'] });
   check('git add 仓库外路径被拒', outside.startsWith('[err E_OUTSIDE]'), outside);
+
+
+  // ── 长回执转存 + ops_result 取回 ────────────────────────────────────────
+  const bigRaw = await ops.sh({ command: '1..60 | ForEach-Object { ("x" * 200) + " line $_" }' });
+  const bigOut = summarizeIfLong(bigRaw, 'ops_sh');
+  check('超长回执被压成摘要（不再是全文）', bigOut.length < 4000, `${bigOut.length} 字符`);
+  const refMatch = /\[ref (r[0-9a-z]+)\]/.exec(bigOut);
+  check('摘要里给出 ref', Boolean(refMatch), bigOut.slice(0, 200));
+  if (refMatch) {
+    const fetched = readStashed({ ref: refMatch[1], offset: 0, maxChars: 200 });
+    check('ops_result 能按 ref 取回', fetched.startsWith('[ok result]') && fetched.includes('line'), fetched.slice(0, 200));
+    const paged = readStashed({ ref: refMatch[1], offset: 200, maxChars: 100 });
+    check('ops_result 支持偏移分页', paged.includes('offset') || paged.includes('第 200-'), paged.slice(0, 120));
+    const missing = readStashed({ ref: 'r-not-exist' });
+    check('ops_result 引用不存在回 E_REF', missing.startsWith('[err E_REF]'), missing);
+  }
 
   // ── 安全边界 ───────────────────────────────────────────────────────────
   const d1 = ops.write({ path: 'C:\\Windows\\ops-should-not-write.txt', content: 'x' });

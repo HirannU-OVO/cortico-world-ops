@@ -21,16 +21,16 @@ export { resolvePath } from './paths.ts';
 
 const execFileAsync = promisify(execFile);
 
-const READ_DEFAULT_BYTES = 12_000;
+const READ_DEFAULT_BYTES = 8_000;
 const READ_MAX_BYTES = 64_000;
-const READ_DEFAULT_LINES = 150;
+const READ_DEFAULT_LINES = 100;
 const READ_MAX_LINES = 2_000;
 const MEMO_MAX = 200;
 
 const SCAN_MAX_FILES = 20_000;
 const SCAN_MAX_DEPTH = 12;
 const SCAN_MAX_FILE_BYTES = 2 * 1024 * 1024;
-const FIND_DEFAULT_RESULTS = 60;
+const FIND_DEFAULT_RESULTS = 30;
 const FIND_MAX_RESULTS = 500;
 const MATCHES_PER_FILE = 5;
 
@@ -498,8 +498,8 @@ export class Ops {
       : prelude + command;
 
     const limit = (s: string): string => {
-      const { text, omitted } = headTail(s, 80, 30);
-      return omitted ? text : clip(text, 10_000).text;
+      const { text, omitted } = headTail(s, 60, 20);
+      return omitted ? text : clip(text, 6_000).text;
     };
 
     // filter：只留匹配行（可选带上下文），因为关键行常在头尾之外。
@@ -635,7 +635,7 @@ export class Ops {
 
     const sections: string[] = [];
     const counts = { read: 0, patch: 0, write: 0, find: 0, sh: 0, failed: 0, expanded: 0 };
-    const perItem = 1_200;
+    const perItem = 1_000;
 
     const push = (label: string, out: string): void => {
       if (out.startsWith('[err')) counts.failed += 1;
@@ -745,7 +745,7 @@ export class Ops {
         + (counts.failed ? ` · 失败 ${counts.failed}` : ''),
     );
     const merged = [head, ...sections].join('\n\n');
-    const { text, truncated } = clip(merged, 14_000);
+    const { text, truncated } = clip(merged, 10_000);
     return truncated ? `${text}\n[next] 批次输出被截断了：拆成两次 ops_batch，或用单工具缩小范围` : text;
   }
 

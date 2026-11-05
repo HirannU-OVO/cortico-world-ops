@@ -11,6 +11,7 @@ import type { ToolDef, ToolSpec } from 'cortico/core/types.ts';
 import { gitOp } from './git.ts';
 import { fetchUrl } from './net.ts';
 import { Ops } from './ops.ts';
+import { clearResultStore, readStashed, summarizeIfLong } from './results.ts';
 
 export interface OpsDescribe {
   tools: ToolSpec[];
@@ -37,6 +38,7 @@ export function handlers(ops: Ops): Record<string, Handler> {
     ops_fetch: (args) => fetchUrl(args),
     ops_sh: (args) => ops.sh(args),
     ops_batch: (args) => ops.batch(args),
+    ops_result: (args) => readStashed(args),
   };
 }
 
@@ -63,7 +65,9 @@ export function buildTools(ops: Ops, decls: readonly ToolSpec[]): ToolDef[] {
       handler: async (args: Record<string, unknown>) => {
         if (!handler) return `[err E_UNWIRED] ${decl.name} 没有实现`;
         try {
-          return await handler(args ?? {});
+          const out = await handler(args ?? {});
+          // 长回执转存 + 摘要：历史里只留头尾，细节按需用 ops_result 取。
+          return summarizeIfLong(String(out ?? ''), decl.name);
         } catch (e) {
           // 兜底：任何未预期异常都变成结构化回执，别把主循环带崩。
           const message = String((e as Error)?.message ?? e);

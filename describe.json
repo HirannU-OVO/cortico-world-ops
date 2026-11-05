@@ -20,11 +20,11 @@
           },
           "limit": {
             "type": "integer",
-            "description": "最多读几行，默认 150，上限 2000"
+            "description": "最多读几行，默认 100，上限 2000"
           },
           "maxBytes": {
             "type": "integer",
-            "description": "本次最多给几字节，默认 12000，上限 64000"
+            "description": "本次最多给几字节，默认 8000，上限 64000"
           },
           "fresh": {
             "type": "boolean",
@@ -105,7 +105,7 @@
     },
     {
       "name": "ops_find",
-      "description": "找文件或找内容。mode=files 按 glob 列文件；mode=content 按正则搜内容。结果是分页的，拿 nextCursor 接着翻，被截断时会明说不是全部。",
+      "description": "找文件或找内容。mode=files 按 glob 列文件；mode=content 按正则搜内容，可用 context 直接带前后几行。结果是分页的，拿 nextCursor 接着翻；被截断时会明说不是全部。",
       "tags": [
         "read"
       ],
@@ -142,7 +142,7 @@
           },
           "maxResults": {
             "type": "integer",
-            "description": "可选，最多几条，默认 60，上限 500"
+            "description": "可选，最多几条，默认 30，上限 500"
           },
           "cursor": {
             "type": "string",
@@ -259,7 +259,7 @@
           },
           "maxChars": {
             "type": "integer",
-            "description": "可选，正文最多给多少字，默认 6000，上限 30000"
+            "description": "可选，正文最多给多少字，默认 3500，上限 30000"
           },
           "raw": {
             "type": "boolean",
@@ -468,6 +468,34 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "ops_result",
+      "description": "取回被转存的长回执。回执里出现 [ref xxx] 且你要中间那段时用它，offset 从 0 起；不取也不影响继续干活。",
+      "tags": [
+        "read"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "回执里的引用，如 r3f9"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "可选，从第几个字符开始，默认 0"
+          },
+          "maxChars": {
+            "type": "integer",
+            "description": "可选，一次取多少字，默认 3000，上限 12000"
+          }
+        },
+        "required": [
+          "ref"
+        ]
       }
     }
   ],

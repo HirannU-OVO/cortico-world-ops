@@ -23,6 +23,10 @@
 - **结构调整**：`ops_fetch` 拆到 `src/net.ts`、`ops_git` 拆到 `src/git.ts`、路径工具拆到 `src/paths.ts`，单文件保持在 800 行以内。
 - **测试**：断言从 36 条加到 55 条，新增 `find context/since`、`sh filter`、`fetch POST/headers`、`batch from/$prev`、`read 二进制拒绝`、`git add/commit/push`（用本地裸库当远端，离线可跑）。
 
+- **`ops_result` + 长回执转存**：任何工具回执超过 4000 字都会自动压成「头 1200 字 + 尾 400 字 + `[ref xxx]`」，全文留在扩展内存里；确实要中间那段再用 `ops_result{ref, offset}` 按偏移取。目的是让历史里只留摘要，细节按需取。
+- **默认输出再调紧一档**：`ops_read` 行数 150→100、字节 12000→8000；`ops_find` 条数 60→30；`ops_sh` 头尾 80/30→60/20、单块上限 10000→6000；`ops_fetch` 正文字数 6000→3500；`ops_batch` 每条 1200→1000、整批 14000→10000。同样的活儿，进历史的字更少。
+- **环境提示词补一条**：回执被压成摘要时，够用就别取；要中间那段才用 `ops_result`，别为了看全反复读。
+
 ### 升级提示
 
 - 新增工具会进 schema。如果旧版 `cortico-world-devtools` 还开着，请关掉它，避免 `sh` / `fs_read` / `fs_write` / `web_fetch` 重复占字节。

@@ -1,7 +1,7 @@
 /** ops_fetch：抓网页或接口。HTML 剥正文、JSON 格式化、支持自定义方法与请求头。 */
 import { clip, err, ok, oneLine } from './text.ts';
 
-const FETCH_DEFAULT_CHARS = 6_000;
+const FETCH_DEFAULT_CHARS = 3_500;
 const FETCH_MAX_CHARS = 30_000;
 const FETCH_MAX_BYTES = 8 * 1024 * 1024;
 const FETCH_UA =

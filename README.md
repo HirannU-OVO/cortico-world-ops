@@ -20,7 +20,7 @@
 - 所有输出都有**字符/行数上限**，被截断时明确写出「还剩多少、怎么续读」，不静默丢内容；
 - 失败返回 `[err E_XXX]` + `[next]` 下一步，副作用不确定时标 `[effect unknown]`——**不鼓励模型原样重试**。
 
-## 九个工具
+## 十个工具
 
 | 工具 | 干什么 | 关键参数（默认 / 上限） |
 |---|---|---|
@@ -33,6 +33,7 @@
 | `ops_fetch` | 抓网页或接口：HTML 剥成正文、JSON 自动格式化、按字符封顶 | `url` `maxChars`（6000 / 30000）`raw` `method` `body` `headers` |
 | `ops_sh` | 跑 PowerShell 命令或 `.ps1`，返回 stdout/stderr/退出码 | `command` `scriptPath` `cwd` `timeoutMs`（60000 / 300000）`filter`（正则只留匹配行）`filterContext` |
 | `ops_batch` | **一轮里顺序做多件事**：找 / 读 / 改 / 写 / 命令 | `reads[]`（可 `from` 引用 finds 结果）`patches[]` `writes[]` `finds[]` `shells[]` |
+| `ops_result` | 取回被转存的长回执（按 `offset` 分页） | `ref` `offset` `maxChars`（3000 / 12000） |
 
 ### 改代码的标准姿势
 
@@ -47,6 +48,11 @@ ops_git{mode:"diff"}          → 复查改了什么
 `ops_patch` 的 `old` 必须**逐字一致且全文件唯一**；被拒（`E_AMBIGUOUS`）就从上面多带两行上下文，确认要全换才加 `all=true`。
 
 `ops_find` 用 `context: 2` 就能直接把命中行前后两行一起看到，省掉「找到行号再读一轮」；`ops_batch` 里 `reads: [{ from: "1" }]` 可以把第 1 个 finds 找到的文件直接读掉，字符串参数还支持 `$1` / `$prev` 传单个路径。
+
+### 长回执会自动压成摘要
+
+任何工具回执超过 4000 字，会自动变成「头 1200 字 + 尾 400 字 + `[ref xxx]`」，全文留在扩展内存里。够用就别取；确实要中间那段再用 `ops_result{ref, offset}` 按偏移取。
+这样历史里只留摘要，细节按需取——反复读全文是上下文膨胀的主因之一。
 
 ### 回执长什么样
 
