@@ -1,4 +1,5 @@
 /** ops_fetch：抓网页或接口。HTML 剥正文、JSON 格式化、支持自定义方法与请求头。 */
+import { resolveLimits, type OpsLimits } from './config.ts';
 import { clip, err, ok, oneLine } from './text.ts';
 
 const FETCH_DEFAULT_CHARS = 3_500;
@@ -66,7 +67,10 @@ function parseHeaders(raw: unknown): { headers: Record<string, string> } | { err
   return { headers };
 }
 
-export async function fetchUrl(args: Record<string, unknown>): Promise<string> {
+export async function fetchUrl(
+  args: Record<string, unknown>,
+  limits: OpsLimits = resolveLimits(undefined),
+): Promise<string> {
   const url = String(args.url ?? '').trim();
   if (!url) return err('E_INPUT', 'url 不能为空', '带 http(s):// 的完整地址');
   if (!/^https?:\/\//i.test(url)) {
@@ -77,10 +81,10 @@ export async function fetchUrl(args: Record<string, unknown>): Promise<string> {
   if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     return err('E_INPUT', `不支持的 method：${oneLine(method, 20)}`, 'GET / HEAD / POST / PUT / PATCH / DELETE');
   }
-  const maxRaw = Number(args.maxChars ?? FETCH_DEFAULT_CHARS);
+  const maxRaw = Number(args.maxChars ?? limits.fetchChars);
   const maxChars = Number.isFinite(maxRaw)
     ? Math.min(Math.max(Math.trunc(maxRaw), 400), FETCH_MAX_CHARS)
-    : FETCH_DEFAULT_CHARS;
+    : limits.fetchChars;
 
   const parsedHeaders = parseHeaders(args.headers);
   if ('error' in parsedHeaders) return err('E_INPUT', parsedHeaders.error, '用数组："Authorization: Bearer xxx"');

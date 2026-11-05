@@ -15,6 +15,8 @@ import { Ops } from '../src/ops.ts';
 import { gitOp as git } from '../src/git.ts';
 import { fetchUrl as fetchTool } from '../src/net.ts';
 import { readStashed, summarizeIfLong } from '../src/results.ts';
+import { resolveLimits, opsConfigGroup } from '../src/config.ts';
+import { OpsWorld } from '../src/definition.ts';
 
 const ops = new Ops();
 const root = mkdtempSync(join(tmpdir(), 'ops-smoke-'));
@@ -316,6 +318,56 @@ try {
     const missing = readStashed({ ref: 'r-not-exist' });
     check('ops_result 引用不存在回 E_REF', missing.startsWith('[err E_REF]'), missing);
   }
+
+
+  // ── 配置项：面板改完即时生效 ───────────────────────────────────────────
+  const tight = resolveLimits({ read: { lines: 25 }, sh: { head: 12, tail: 6 }, fetch: { chars: 900 } });
+  check('resolveLimits 读得到面板值', tight.readLines === 25 && tight.shHead === 12 && tight.fetchChars === 900, JSON.stringify(tight));
+  const clamped = resolveLimits({ read: { lines: 999999 }, find: { maxResults: -5 } });
+  check(
+    'resolveLimits 越界会夹紧',
+    clamped.readLines === 2000 && clamped.findResults === 5,
+    JSON.stringify(clamped),
+  );
+
+  const longFile = join(root, 'long.txt');
+  writeFileSync(longFile, Array.from({ length: 60 }, (_, i) => `row ${i + 1}`).join('\n'), 'utf8');
+  const tightOps = new Ops(() => resolveLimits({ read: { lines: 25 } }));
+  const tightRead = tightOps.read({ path: longFile });
+  const tightLines = tightRead.split('\n').filter((l) => /^\d+\| /.test(l)).length;
+  check('ops_read 听从面板的默认行数', tightLines === 25, `给了 ${tightLines} 行`);
+
+  const tightSum = summarizeIfLong('y'.repeat(3000), 'ops_sh', 1000);
+  check('转存阈值可调（1000 就转）', tightSum.includes('[ref ') && tightSum.length < 2500, `${tightSum.length} 字符`);
+  const looseSum = summarizeIfLong('y'.repeat(3000), 'ops_sh', 10000);
+  check('阈值调大就不转存', !looseSum.includes('[ref ') && looseSum.length === 3000, `${looseSum.length} 字符`);
+
+  // 环境提示词三档
+  const cfgOff = new OpsWorld({ cfg: { envPrompt: 'off' } });
+  check('envPrompt=off 时整段不注入', cfgOff.envPromptVars() === null, String(cfgOff.envPromptVars()));
+  const cfgFull = new OpsWorld({ cfg: { envPrompt: 'full' } });
+  const fullVars = cfgFull.envPromptVars();
+  check('envPrompt=full 注入完整正文', Boolean(fullVars?.['ops.body']?.includes('ops_batch')), JSON.stringify(fullVars).slice(0, 120));
+  const cfgShort = new OpsWorld({ cfg: { envPrompt: 'short' } });
+  const shortVars = cfgShort.envPromptVars();
+  check(
+    'envPrompt=short 注入精简正文且更短',
+    Boolean(shortVars?.['ops.body']) && shortVars['ops.body'].length < (fullVars?.['ops.body']?.length ?? 0),
+    `${shortVars?.['ops.body']?.length} vs ${fullVars?.['ops.body']?.length}`,
+  );
+
+  const group = opsConfigGroup();
+  const props = Object.keys(group.schema.properties);
+  check(
+    '面板声明齐全',
+    group.owner === 'world:ops' && props.includes('read.lines') && props.includes('envPrompt') && props.length >= 9,
+    props.join(','),
+  );
+  check(
+    '每个面板项都有标题',
+    props.every((k) => typeof group.schema.properties[k].title === 'string' && group.schema.properties[k].title.length > 0),
+    props.join(','),
+  );
 
   // ── 安全边界 ───────────────────────────────────────────────────────────
   const d1 = ops.write({ path: 'C:\\Windows\\ops-should-not-write.txt', content: 'x' });

@@ -33,7 +33,7 @@ export function stash(text: string, label: string): string {
 }
 
 /** 取出引用内容的一段；找不到引用就回错误串。 */
-export function readStashed(args: Record<string, unknown>): string {
+export function readStashed(args: Record<string, unknown>, pageDefault = 3_000): string {
   const ref = String(args.ref ?? '').trim().replace(/^\[?ref\s*/i, '').replace(/\]$/, '');
   if (!ref) return errText('E_INPUT', 'ref 不能为空', '回执里 [ref xxx] 就是它');
   const hit = store.get(ref);
@@ -44,8 +44,8 @@ export function readStashed(args: Record<string, unknown>): string {
       '重新跑那一步工具；引用只在本次进程内有效',
     );
   }
-  const maxRaw = Number(args.maxChars ?? 3_000);
-  const maxChars = Number.isFinite(maxRaw) ? Math.min(Math.max(Math.trunc(maxRaw), 400), 12_000) : 3_000;
+  const maxRaw = Number(args.maxChars ?? pageDefault);
+  const maxChars = Number.isFinite(maxRaw) ? Math.min(Math.max(Math.trunc(maxRaw), 400), 12_000) : pageDefault;
   let offset = Number(args.offset ?? 0);
   if (!Number.isFinite(offset)) offset = 0;
   offset = Math.max(0, Math.trunc(offset));
@@ -63,15 +63,15 @@ function errText(code: string, message: string, next?: string): string {
   return [`[err ${code}] ${message}`, next ? `[next] ${next}` : ''].filter(Boolean).join('\n');
 }
 
-/** 超过这个长度的回执就转存，只回摘要。 */
+/** 超过这个长度的回执就转存，只回摘要（面板可调）。 */
 export const STASH_THRESHOLD = 4_000;
 /** 摘要里保留的头尾字数。 */
 const HEAD_CHARS = 1_200;
 const TAIL_CHARS = 400;
 
 /** 长回执 → 摘要 + 引用；短回执原样返回。 */
-export function summarizeIfLong(text: string, tool: string): string {
-  if (text.length <= STASH_THRESHOLD || text.startsWith('[err')) return text;
+export function summarizeIfLong(text: string, tool: string, threshold = STASH_THRESHOLD): string {
+  if (text.length <= threshold || text.startsWith('[err')) return text;
   const ref = stash(text, tool);
   const head = text.slice(0, HEAD_CHARS);
   const tail = text.slice(-TAIL_CHARS);

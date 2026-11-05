@@ -1,0 +1,161 @@
+/** 可调参数：默认值、上下限、面板声明与提示词正文。cfg 是 worlds.ops 的活引用，改了即时生效。 */
+import { readFileSync } from 'node:fs';
+
+import type { ConfigGroup } from 'cortico/core/config-schema.ts';
+
+export interface OpsConfig {
+  enabled?: boolean;
+  read?: { lines?: number; bytes?: number };
+  find?: { maxResults?: number };
+  sh?: { head?: number; tail?: number };
+  fetch?: { chars?: number };
+  result?: { stashAt?: number; page?: number };
+  envPrompt?: 'full' | 'short' | 'off';
+}
+
+/** 解析后的生效值；缺项回落到默认。 */
+export interface OpsLimits {
+  readLines: number;
+  readBytes: number;
+  findResults: number;
+  shHead: number;
+  shTail: number;
+  fetchChars: number;
+  stashAt: number;
+  resultPage: number;
+}
+
+export const OPS_DEFAULTS = {
+  read: { lines: 100, bytes: 8_000 },
+  find: { maxResults: 30 },
+  sh: { head: 60, tail: 20 },
+  fetch: { chars: 3_500 },
+  result: { stashAt: 4_000, page: 3_000 },
+  envPrompt: 'full' as const,
+};
+
+const clamp = (v: unknown, lo: number, hi: number, fallback: number): number => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.trunc(n), lo), hi);
+};
+
+/** 从活配置读出生效限制；越界一律夹紧，坏值回落默认。 */
+export function resolveLimits(cfg: OpsConfig | undefined): OpsLimits {
+  const c = cfg ?? {};
+  return {
+    readLines: clamp(c.read?.lines, 20, 2_000, OPS_DEFAULTS.read.lines),
+    readBytes: clamp(c.read?.bytes, 1_000, 64_000, OPS_DEFAULTS.read.bytes),
+    findResults: clamp(c.find?.maxResults, 5, 500, OPS_DEFAULTS.find.maxResults),
+    shHead: clamp(c.sh?.head, 10, 300, OPS_DEFAULTS.sh.head),
+    shTail: clamp(c.sh?.tail, 5, 100, OPS_DEFAULTS.sh.tail),
+    fetchChars: clamp(c.fetch?.chars, 500, 30_000, OPS_DEFAULTS.fetch.chars),
+    stashAt: clamp(c.result?.stashAt, 1_000, 20_000, OPS_DEFAULTS.result.stashAt),
+    resultPage: clamp(c.result?.page, 500, 12_000, OPS_DEFAULTS.result.page),
+  };
+}
+
+/** 面板里的「本机操作」一组。键是 worlds.ops 下的点分路径。 */
+export function opsConfigGroup(): ConfigGroup {
+  return {
+    id: 'ops',
+    owner: 'world:ops',
+    schema: {
+      type: 'object',
+      title: '本机操作',
+      description: '这些数字决定每次工具调用吐多少字。调小能省上下文，调大能一次看更多；改完即时生效。',
+      properties: {
+        'read.lines': {
+          type: 'integer',
+          title: '默认读多少行',
+          description: 'ops_read 不给 limit 时用这个；上限仍是 2000。',
+          minimum: 20,
+          maximum: 2_000,
+          'x-suffix': '行',
+          'x-hot': true,
+        },
+        'read.bytes': {
+          type: 'integer',
+          title: '单次读多少字节',
+          description: 'ops_read 不给 maxBytes 时用这个；到上限就截断并给 next 指针。',
+          minimum: 1_000,
+          maximum: 64_000,
+          'x-suffix': 'B',
+          'x-hot': true,
+        },
+        'find.maxResults': {
+          type: 'integer',
+          title: '查找默认条数',
+          description: 'ops_find 不给 maxResults 时用这个；分页靠 cursor 继续。',
+          minimum: 5,
+          maximum: 500,
+          'x-suffix': '条',
+          'x-hot': true,
+        },
+        'sh.head': {
+          type: 'integer',
+          title: '命令输出留头',
+          description: 'ops_sh 保留开头多少行；中间省略的部分可以用 filter 捞。',
+          minimum: 10,
+          maximum: 300,
+          'x-suffix': '行',
+          'x-hot': true,
+        },
+        'sh.tail': {
+          type: 'integer',
+          title: '命令输出留尾',
+          description: 'ops_sh 保留末尾多少行；报错信息通常在这里。',
+          minimum: 5,
+          maximum: 100,
+          'x-suffix': '行',
+          'x-hot': true,
+        },
+        'fetch.chars': {
+          type: 'integer',
+          title: '抓网页默认字数',
+          description: 'ops_fetch 不给 maxChars 时用这个；网页正文通常几千字就够读。',
+          minimum: 500,
+          maximum: 30_000,
+          'x-suffix': '字',
+          'x-hot': true,
+        },
+        'result.stashAt': {
+          type: 'integer',
+          title: '超过多少字转存',
+          description: '回执超过这个长度就压成「头尾摘要 + [ref]」，全文留在扩展内存里，用 ops_result 取回。调大＝更多内容直进上下文。',
+          minimum: 1_000,
+          maximum: 20_000,
+          'x-suffix': '字',
+          'x-hot': true,
+        },
+        'result.page': {
+          type: 'integer',
+          title: 'ops_result 单次取多少字',
+          description: '按 ref 取回长回执时默认给多少字；分页用 offset。',
+          minimum: 500,
+          maximum: 12_000,
+          'x-suffix': '字',
+          'x-hot': true,
+        },
+        envPrompt: {
+          type: 'string',
+          title: '环境提示词',
+          description:
+            'full＝完整用法约定；short＝只留几条要点；off＝整段不注入（省 token，但模型可能不知道优先用 ops_batch）。',
+          enum: ['full', 'short', 'off'],
+          'x-hot': true,
+        },
+      },
+    },
+  };
+}
+
+/** 提示词正文：按配置选完整版或精简版。 */
+export function promptBody(mode: OpsConfig['envPrompt']): string {
+  const file = mode === 'short' ? 'ENV_PROMPT_SHORT.md' : 'ENV_PROMPT_FULL.md';
+  try {
+    return readFileSync(new URL(`./${file}`, import.meta.url), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}

@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { basename as pathBasename, dirname, join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 
+import { resolveLimits, type OpsLimits } from './config.ts';
 import { isDeniedWriteTarget, resolvePath } from './paths.ts';
 import { bytes, clip, err, headTail, numbered, ok, oneLine, revision } from './text.ts';
 
@@ -111,19 +112,27 @@ export function clearReadMemo(): void {
 }
 
 export class Ops {
+  private readonly limits: () => OpsLimits;
+
+  /** 每次调用现读限制，面板改完即时生效。 */
+  constructor(limits: () => OpsLimits = () => resolveLimits(undefined)) {
+    this.limits = limits;
+  }
+
   // ── ops_read ────────────────────────────────────────────────────────────
   read(args: Record<string, unknown>): string {
+    const L = this.limits();
     const rawPath = String(args.path ?? '').trim();
     if (!rawPath) return err('E_INPUT', 'path 不能为空', '给一个文件绝对路径');
     const abs = resolvePath(rawPath);
-    const maxBytesRaw = Number(args.maxBytes ?? READ_DEFAULT_BYTES);
+    const maxBytesRaw = Number(args.maxBytes ?? L.readBytes);
     const maxBytes = Number.isFinite(maxBytesRaw)
       ? Math.min(Math.max(maxBytesRaw, 400), READ_MAX_BYTES)
-      : READ_DEFAULT_BYTES;
-    const limitRaw = Number(args.limit ?? READ_DEFAULT_LINES);
+      : L.readBytes;
+    const limitRaw = Number(args.limit ?? L.readLines);
     const limit = Number.isFinite(limitRaw)
       ? Math.min(Math.max(Math.trunc(limitRaw), 1), READ_MAX_LINES)
-      : READ_DEFAULT_LINES;
+      : L.readLines;
     const fresh = args.fresh === true;
 
     try {
@@ -280,6 +289,7 @@ export class Ops {
 
   /** 找文件/找内容，同时把命中的绝对路径带出来（batch 的 from 靠它）。 */
   findCore(args: Record<string, unknown>): { text: string; paths: string[] } {
+    const L = this.limits();
     const pattern = String(args.pattern ?? '').trim();
     if (!pattern) {
       return { text: err('E_INPUT', 'pattern 不能为空', 'files 模式给 glob，content 模式给正则'), paths: [] };
@@ -310,10 +320,10 @@ export class Ops {
       }
     }
 
-    const maxRaw = Number(args.maxResults ?? FIND_DEFAULT_RESULTS);
+    const maxRaw = Number(args.maxResults ?? L.findResults);
     const maxResults = Number.isFinite(maxRaw)
       ? Math.min(Math.max(Math.trunc(maxRaw), 1), FIND_MAX_RESULTS)
-      : FIND_DEFAULT_RESULTS;
+      : L.findResults;
     const ctxRaw = Number(args.context ?? 0);
     const context = Number.isFinite(ctxRaw) ? Math.min(Math.max(Math.trunc(ctxRaw), 0), 10) : 0;
     const sinceParsed = parseSince(args.since);
@@ -497,8 +507,9 @@ export class Ops {
         + 'catch { Write-Error $_; exit 1 }'
       : prelude + command;
 
+    const L = this.limits();
     const limit = (s: string): string => {
-      const { text, omitted } = headTail(s, 60, 20);
+      const { text, omitted } = headTail(s, L.shHead, L.shTail);
       return omitted ? text : clip(text, 6_000).text;
     };
 

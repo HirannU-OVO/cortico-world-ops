@@ -8,10 +8,11 @@ import { readFileSync } from 'node:fs';
 
 import type { ToolDef, ToolSpec } from 'cortico/core/types.ts';
 
+import { resolveLimits, type OpsConfig, type OpsLimits } from './config.ts';
 import { gitOp } from './git.ts';
 import { fetchUrl } from './net.ts';
 import { Ops } from './ops.ts';
-import { clearResultStore, readStashed, summarizeIfLong } from './results.ts';
+import { readStashed, summarizeIfLong } from './results.ts';
 
 export interface OpsDescribe {
   tools: ToolSpec[];
@@ -27,7 +28,7 @@ export function loadDescribe(): OpsDescribe {
 type Handler = (args: Record<string, unknown>) => Promise<string> | string;
 
 /** 工具名 → 实现。加工具时先改 describe.json，再在这里补一行。 */
-export function handlers(ops: Ops): Record<string, Handler> {
+export function handlers(ops: Ops, limits: () => OpsLimits = () => resolveLimits(undefined)): Record<string, Handler> {
   return {
     ops_read: (args) => ops.read(args),
     ops_write: (args) => ops.write(args),
@@ -35,10 +36,10 @@ export function handlers(ops: Ops): Record<string, Handler> {
     ops_find: (args) => ops.find(args),
     ops_tree: (args) => ops.tree(args),
     ops_git: (args) => gitOp(args),
-    ops_fetch: (args) => fetchUrl(args),
+    ops_fetch: (args) => fetchUrl(args, limits()),
     ops_sh: (args) => ops.sh(args),
     ops_batch: (args) => ops.batch(args),
-    ops_result: (args) => readStashed(args),
+    ops_result: (args) => readStashed(args, limits().resultPage),
   };
 }
 
@@ -52,9 +53,10 @@ export function assertCoverage(decls: readonly ToolSpec[], table: Record<string,
   return problems;
 }
 
-/** 组装 ToolDef 列表。 */
-export function buildTools(ops: Ops, decls: readonly ToolSpec[]): ToolDef[] {
-  const table = handlers(ops);
+/** 组装 ToolDef 列表；cfg 是 worlds.ops 的活引用，改了即时生效。 */
+export function buildTools(ops: Ops, decls: readonly ToolSpec[], cfg?: OpsConfig): ToolDef[] {
+  const limits = (): OpsLimits => resolveLimits(cfg);
+  const table = handlers(ops, limits);
   return decls.map((decl) => {
     const handler = table[decl.name];
     return {
@@ -67,7 +69,7 @@ export function buildTools(ops: Ops, decls: readonly ToolSpec[]): ToolDef[] {
         try {
           const out = await handler(args ?? {});
           // 长回执转存 + 摘要：历史里只留头尾，细节按需用 ops_result 取。
-          return summarizeIfLong(String(out ?? ''), decl.name);
+          return summarizeIfLong(String(out ?? ''), decl.name, limits().stashAt);
         } catch (e) {
           // 兜底：任何未预期异常都变成结构化回执，别把主循环带崩。
           const message = String((e as Error)?.message ?? e);

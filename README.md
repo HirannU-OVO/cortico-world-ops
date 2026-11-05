@@ -130,9 +130,27 @@ pnpm install
 
 ## 配置参数速查
 
-**本扩展没有配置项**（`defaults()` 返回空对象）。所有行为由工具参数控制，不往面板里堆开关。
+扩展页的「本机操作」分组里能直接调；改完**即时生效**，不用重启。
 
-只有一段**环境提示词**随扩展注入（`src/ENV_PROMPT.md`，约 430 字）：约定先 `ops_tree` 摸结构、改代码用 `ops_patch`、多文件走 `ops_batch`、`[err]` 照 `[next]` 改。它会以「本机操作 · 环境提示词」出现在 Coopanion 的提示词页，可随时改或清空。
+| 配置项 | 默认 | 范围 | 作用 |
+| --- | ---: | --- | --- |
+| `read.lines` | 100 行 | 20–2000 | `ops_read` 不给 `limit` 时的行数 |
+| `read.bytes` | 8000 B | 1k–64k | `ops_read` 单次字节上限 |
+| `find.maxResults` | 30 条 | 5–500 | `ops_find` 默认返回条数 |
+| `sh.head` | 60 行 | 10–300 | `ops_sh` 保留开头多少行 |
+| `sh.tail` | 20 行 | 5–100 | `ops_sh` 保留末尾多少行 |
+| `fetch.chars` | 3500 字 | 500–30000 | `ops_fetch` 默认正文长度 |
+| `result.stashAt` | 4000 字 | 1k–20k | 超过就压成摘要 + `[ref]` |
+| `result.page` | 3000 字 | 500–12000 | `ops_result` 单次取回多少字 |
+| `envPrompt` | `full` | `full` / `short` / `off` | 环境提示词注入多少 |
+
+### 环境提示词的三档
+
+- `full`：完整的用法约定（推荐，默认）；
+- `short`：只留 4 条要点，省一半 token；
+- `off`：**整段不注入**——靠 `envPromptVars()` 返回 `null`，内核会把这个 World 的环境段整个省掉，不是发一段空字符串。
+
+> 内核只取每个 World 的**第一个** `role=envPrompt` 文档（`prefix.ts:72` 用的是 `.find()`），所以本扩展只声明一个模板，正文由 `{{ops.body}}` 变量按上面的配置填进去。
 
 ## 兼容性
 
