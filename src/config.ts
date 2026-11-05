@@ -1,7 +1,7 @@
 /** 可调参数：默认值、上下限、面板声明与提示词正文。cfg 是 worlds.ops 的活引用，改了即时生效。 */
 import { readFileSync } from 'node:fs';
 
-import type { ConfigGroup } from 'cortico/core/config-schema.ts';
+import type { ConfigGroup, ConfigProperty } from 'cortico/core/config-schema.ts';
 
 export interface OpsConfig {
   enabled?: boolean;
@@ -55,7 +55,13 @@ export function resolveLimits(cfg: OpsConfig | undefined): OpsLimits {
   };
 }
 
-/** 面板里的「本机操作」一组。键是 worlds.ops 下的点分路径。 */
+/**
+ * 面板里的「本机操作」一组。
+ *
+ * 键必须写成 **从配置根算起的完整点分路径**（`worlds.ops.read.lines`）：
+ * WebUI 是按这些键在整份 config 上取值/写回的，写成 `read.lines` 会取到 undefined，
+ * 面板就显示 0 / 空串。
+ */
 export function opsConfigGroup(): ConfigGroup {
   return {
     id: 'ops',
@@ -64,7 +70,7 @@ export function opsConfigGroup(): ConfigGroup {
       type: 'object',
       title: '本机操作',
       description: '这些数字决定每次工具调用吐多少字。调小能省上下文，调大能一次看更多；改完即时生效。',
-      properties: {
+      properties: withWorldPrefix({
         'read.lines': {
           type: 'integer',
           title: '默认读多少行',
@@ -145,9 +151,16 @@ export function opsConfigGroup(): ConfigGroup {
           enum: ['full', 'short', 'off'],
           'x-hot': true,
         },
-      },
+        }),
     },
   };
+}
+
+/** 给每个键加上 `worlds.ops.` 前缀：面板是按完整路径取值与写回的。 */
+function withWorldPrefix(props: Record<string, ConfigProperty>): Record<string, ConfigProperty> {
+  const out: Record<string, ConfigProperty> = {};
+  for (const [key, value] of Object.entries(props)) out[`worlds.ops.${key}`] = value;
+  return out;
 }
 
 /** 提示词正文：按配置选完整版或精简版。 */
@@ -158,4 +171,37 @@ export function promptBody(mode: OpsConfig['envPrompt']): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * 只挑出配置里缺的叶子项，拼成一份补丁。
+ *
+ * 为什么需要：内核 `world.ts:128` 用的是 `worlds[def.id] ??= {...def.defaults()}`，
+ * 只对「整段不存在」补默认值；已经写成 `{"enabled": true}` 的段不会补，于是面板一片空。
+ * 激活时由 World 自己把缺的补上（`ctx.persist`），老部署也能自愈。
+ */
+export function missingDefaults(cfg: OpsConfig | undefined): Record<string, unknown> {
+  const c = cfg ?? {};
+  const patch: Record<string, unknown> = {};
+
+  const put = (group: string, key: string, value: unknown, current: unknown): void => {
+    if (current === undefined || current === null) {
+      const bucket = (patch[group] ??= {}) as Record<string, unknown>;
+      bucket[key] = value;
+    }
+  };
+
+  put('read', 'lines', OPS_DEFAULTS.read.lines, c.read?.lines);
+  put('read', 'bytes', OPS_DEFAULTS.read.bytes, c.read?.bytes);
+  put('find', 'maxResults', OPS_DEFAULTS.find.maxResults, c.find?.maxResults);
+  put('sh', 'head', OPS_DEFAULTS.sh.head, c.sh?.head);
+  put('sh', 'tail', OPS_DEFAULTS.sh.tail, c.sh?.tail);
+  put('fetch', 'chars', OPS_DEFAULTS.fetch.chars, c.fetch?.chars);
+  put('result', 'stashAt', OPS_DEFAULTS.result.stashAt, c.result?.stashAt);
+  put('result', 'page', OPS_DEFAULTS.result.page, c.result?.page);
+
+  if (c.envPrompt === undefined || c.envPrompt === null || (c.envPrompt as string) === '') {
+    patch.envPrompt = OPS_DEFAULTS.envPrompt;
+  }
+  return patch;
 }

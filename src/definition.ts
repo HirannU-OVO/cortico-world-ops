@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { WorldDefinition } from 'cortico/world.ts';
 
-import { OPS_DEFAULTS, opsConfigGroup, promptBody, resolveLimits, type OpsConfig } from './config.ts';
+import { OPS_DEFAULTS, missingDefaults, opsConfigGroup, promptBody, resolveLimits, type OpsConfig } from './config.ts';
 import { Ops, clearReadMemo } from './ops.ts';
 import { assertCoverage, buildTools, handlers, loadDescribe } from './tools.ts';
 import type { ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
@@ -88,7 +88,13 @@ export const OPS: WorldDefinition<OpsConfig> = {
   id: 'ops',
   label: '本机操作',
   defaults: () => ({ ...OPS_DEFAULTS } as OpsConfig),
-  create: (ctx) => new OpsWorld({ cfg: ctx.cfg as OpsConfig }),
+  create: (ctx) => {
+    // 已存在的 worlds.ops 段不会被自动补 defaults（内核只对缺失整段用 ??=），
+    // 这里补上缺的叶子项，否则面板一片空值。
+    const patch = missingDefaults(ctx.cfg as OpsConfig);
+    if (Object.keys(patch).length) ctx.persist(patch as never);
+    return new OpsWorld({ cfg: ctx.cfg as OpsConfig });
+  },
   describe: {
     // describe.json 就是发给模型的 schema，原样透传，不再二次加工。
     tools: DESCRIBE.tools.map((t) => ({

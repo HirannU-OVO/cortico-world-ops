@@ -15,7 +15,7 @@ import { Ops } from '../src/ops.ts';
 import { gitOp as git } from '../src/git.ts';
 import { fetchUrl as fetchTool } from '../src/net.ts';
 import { readStashed, summarizeIfLong } from '../src/results.ts';
-import { resolveLimits, opsConfigGroup } from '../src/config.ts';
+import { resolveLimits, opsConfigGroup, missingDefaults } from '../src/config.ts';
 import { OpsWorld } from '../src/definition.ts';
 
 const ops = new Ops();
@@ -359,8 +359,12 @@ try {
   const group = opsConfigGroup();
   const props = Object.keys(group.schema.properties);
   check(
-    '面板声明齐全',
-    group.owner === 'world:ops' && props.includes('read.lines') && props.includes('envPrompt') && props.length >= 9,
+    '面板声明齐全（键带 worlds.ops 前缀）',
+    group.owner === 'world:ops'
+      && props.includes('worlds.ops.read.lines')
+      && props.includes('worlds.ops.envPrompt')
+      && props.every((k) => k.startsWith('worlds.ops.'))
+      && props.length >= 9,
     props.join(','),
   );
   check(
@@ -368,6 +372,21 @@ try {
     props.every((k) => typeof group.schema.properties[k].title === 'string' && group.schema.properties[k].title.length > 0),
     props.join(','),
   );
+
+  // 已存在的段不会自动补默认（内核只用 ??=），所以要自己补：
+  const needAll = missingDefaults({});
+  check(
+    '空配置时补丁覆盖全部 9 项',
+    Object.keys(needAll).length === 6 && Object.keys(needAll.read).length === 2 && needAll.result.page === 3000,
+    JSON.stringify(needAll),
+  );
+  const partial = missingDefaults({ read: { lines: 55 }, envPrompt: 'short' });
+  check(
+    '只补缺失项，不覆盖用户已改的值',
+    partial.read?.lines === undefined && partial.read?.bytes === 8000 && partial.envPrompt === undefined && partial.sh?.head === 60,
+    JSON.stringify(partial),
+  );
+  check('全部就位时补丁为空', Object.keys(missingDefaults({ ...needAll, envPrompt: 'full' })).length === 0, '');
 
   // ── 安全边界 ───────────────────────────────────────────────────────────
   const d1 = ops.write({ path: 'C:\\Windows\\ops-should-not-write.txt', content: 'x' });

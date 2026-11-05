@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-ops",
-  "version": "0.2.0-dev.4",
+  "version": "0.2.0-dev.5",
   "type": "module",
   "description": "给 Coopanion 桌宠一套有界、可批量的本机操作工具：读、写、改写、查找、跑命令。所有输出封顶并带续读指针，失败返回结构化错误码而不是抛异常。",
   "license": "MIT",

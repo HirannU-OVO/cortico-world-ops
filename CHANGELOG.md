@@ -32,6 +32,10 @@
 - **限制改为运行时读取**：`Ops` / `ops_fetch` / `ops_result` / 转存阈值不再用写死常量，改成每次调用现读配置，配套加了 `resolveLimits()` 的边界夹紧。
 - **测试**：断言 60 → 70，新增面板值生效、越界夹紧、转存阈值可调、`envPrompt` 三档、面板声明完整性。
 
+- **修复面板全是空值**：World 配置组的键必须写成**从配置根算起的完整路径**（`worlds.ops.read.lines`），写成 `read.lines` 时 WebUI 在整份 config 上取到 `undefined`，于是整数显示 0、字符串显示空。现在用 `withWorldPrefix()` 统一加前缀，实测 `/api/config` 已返回真实数值。
+- **新增 `missingDefaults()`**：内核只在 `worlds.<id>` **整段不存在**时才写入 `defaults()`（`world.ts:128` 用的是 `??=`），手写过 `{"enabled": true}` 的老部署因此拿不到默认值。激活时把缺的叶子项用 `ctx.persist()` 补上（不覆盖用户改过的项），同时本机 config 已直接补齐一份基线。
+- **测试**：73 条断言，新增「面板键带前缀」「只补缺失项不覆盖用户值」「全部就位时补丁为空」。
+
 ### 升级提示
 
 - 新增工具会进 schema。如果旧版 `cortico-world-devtools` 还开着，请关掉它，避免 `sh` / `fs_read` / `fs_write` / `web_fetch` 重复占字节。
