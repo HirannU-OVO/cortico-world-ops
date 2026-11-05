@@ -1,0 +1,416 @@
+{
+  "tools": [
+    {
+      "name": "ops_read",
+      "description": "读文本文件，带行号、按字节封顶。同一范围第二次读且文件没变，只回 unchanged；要大文件的一段就给 offset/limit。",
+      "tags": [
+        "read"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "文件绝对路径"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "起始行，1 起；负数表示从末尾倒数"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "最多读几行，默认 150，上限 2000"
+          },
+          "maxBytes": {
+            "type": "integer",
+            "description": "本次最多给几字节，默认 12000，上限 64000"
+          },
+          "fresh": {
+            "type": "boolean",
+            "description": "文件没变也重发全文"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "ops_write",
+      "description": "写文本文件。mode 默认 overwrite（覆盖），append 追加；目录不存在会自动建。",
+      "tags": [
+        "write"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "文件绝对路径"
+          },
+          "content": {
+            "type": "string",
+            "description": "要写的全部内容"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "overwrite",
+              "append"
+            ],
+            "description": "可选，默认 overwrite"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "ops_patch",
+      "description": "把文件里一段原文替换成新文。old 必须在文件里唯一出现，否则报 E_AMBIGUOUS；确实要全换就 all=true。改代码优先用它，别整份重写。",
+      "tags": [
+        "write"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "文件绝对路径"
+          },
+          "old": {
+            "type": "string",
+            "description": "要替换掉的原文，必须逐字一致"
+          },
+          "new": {
+            "type": "string",
+            "description": "替换成的新文；空串表示删除这段"
+          },
+          "all": {
+            "type": "boolean",
+            "description": "可选，把所有出现处都换掉"
+          }
+        },
+        "required": [
+          "path",
+          "old",
+          "new"
+        ]
+      }
+    },
+    {
+      "name": "ops_find",
+      "description": "找文件或找内容。mode=files 按 glob 列文件；mode=content 按正则搜内容。结果是分页的，拿 nextCursor 接着翻，被截断时会明说不是全部。",
+      "tags": [
+        "read"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "mode=files 时是 glob（如 **/*.md，! 前缀表示排除）；mode=content 时是正则"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "files",
+              "content"
+            ],
+            "description": "可选，默认 content"
+          },
+          "path": {
+            "type": "string",
+            "description": "可选，搜索根目录，默认用户主目录"
+          },
+          "globs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "可选，只在这些 glob 里找；! 前缀排除。默认排除 .git/node_modules/dist 等"
+          },
+          "ignoreCase": {
+            "type": "boolean",
+            "description": "可选，content 模式忽略大小写"
+          },
+          "maxResults": {
+            "type": "integer",
+            "description": "可选，最多几条，默认 60，上限 500"
+          },
+          "cursor": {
+            "type": "string",
+            "description": "可选，上一页返回的 nextCursor"
+          }
+        },
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    {
+      "name": "ops_tree",
+      "description": "看目录结构：只列到指定深度，超出就折起来并说还剩多少项。摸清一个项目先用它，别一上来 glob 一屏文件。",
+      "tags": [
+        "read"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "根目录绝对路径"
+          },
+          "depth": {
+            "type": "integer",
+            "description": "可选，向下几层，默认 2，上限 6"
+          },
+          "maxEntries": {
+            "type": "integer",
+            "description": "可选，最多列几项，默认 200，上限 1000"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "ops_git",
+      "description": "看仓库状态：mode=status（改了哪些文件）、diff（改动摘要）、log（最近提交）。只读，输出有界；要提交请用 ops_sh。",
+      "tags": [
+        "read"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "仓库内任意路径，默认当前目录"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "status",
+              "diff",
+              "log"
+            ],
+            "description": "可选，默认 status"
+          },
+          "staged": {
+            "type": "boolean",
+            "description": "可选，diff 模式看已暂存的改动"
+          },
+          "maxLines": {
+            "type": "integer",
+            "description": "可选，最多几行，默认 80，上限 400"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "ops_fetch",
+      "description": "抓网页或接口，HTML 剥成正文、JSON 自动格式化，正文按字符封顶。要登录或全靠 JS 渲染的页面可能抓到空壳。",
+      "tags": [
+        "read"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "带 http(s):// 的完整地址"
+          },
+          "maxChars": {
+            "type": "integer",
+            "description": "可选，正文最多给多少字，默认 6000，上限 30000"
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "可选，保留原始响应不剥标签（调试用，通常不要）"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      }
+    },
+    {
+      "name": "ops_sh",
+      "description": "在本机跑一条 PowerShell 命令或 .ps1，返回 stdout/stderr/退出码。输出留头 80 行 + 尾 30 行；长脚本先 ops_write 写成 .ps1 再给 scriptPath，省掉多层转义。",
+      "tags": [
+        "write"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "PowerShell 命令（和 scriptPath 二选一）"
+          },
+          "scriptPath": {
+            "type": "string",
+            "description": "可选，.ps1 绝对路径；给了就忽略 command"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "可选，工作目录"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "description": "可选，超时毫秒，默认 60000，上限 300000"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "ops_batch",
+      "description": "一次调用里顺序做多件事：批量读、批量改、批量写、批量搜、批量跑命令。改代码就用它——多个文件的 ops_patch 一次派下去，省掉一整轮上下文重发。每条结果单独封顶。",
+      "tags": [
+        "read",
+        "write"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reads": {
+            "type": "array",
+            "description": "可选，要读的文件",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "offset": {
+                  "type": "integer"
+                },
+                "limit": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          },
+          "patches": {
+            "type": "array",
+            "description": "可选，要打的补丁（逐条独立成败，一条失败不影响后面的）",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "old": {
+                  "type": "string"
+                },
+                "new": {
+                  "type": "string"
+                },
+                "all": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path",
+                "old",
+                "new"
+              ]
+            }
+          },
+          "writes": {
+            "type": "array",
+            "description": "可选，要写的文件",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "overwrite",
+                    "append"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ]
+            }
+          },
+          "finds": {
+            "type": "array",
+            "description": "可选，要搜的内容或文件",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pattern": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "files",
+                    "content"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ]
+            }
+          },
+          "shells": {
+            "type": "array",
+            "description": "可选，要跑的命令",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "command": {
+                  "type": "string"
+                },
+                "cwd": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "command"
+              ]
+            }
+          }
+        },
+        "required": []
+      }
+    }
+  ],
+  "events": []
+}
