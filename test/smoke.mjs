@@ -4,10 +4,16 @@
  */
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Ops } from '../src/ops.ts';
+import { gitOp as git } from '../src/git.ts';
+import { fetchUrl as fetchTool } from '../src/net.ts';
 
 const ops = new Ops();
 const root = mkdtempSync(join(tmpdir(), 'ops-smoke-'));
@@ -89,12 +95,12 @@ try {
   check('tree 不存在的目录回 E_PATH', t2.startsWith('[err E_PATH]'), t2);
 
   // ── ops_git ────────────────────────────────────────────────────────────
-  const g1 = await ops.git({ path: tmpdir() });
+  const g1 = await git({ path: tmpdir() });
   check('git 非仓库路径回 E_GIT', g1.startsWith('[err E_GIT]'), g1);
   const selfRepo = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
-  const g2 = await ops.git({ path: selfRepo, mode: 'status' });
+  const g2 = await git({ path: selfRepo, mode: 'status' });
   check('git status 能在真实仓库上跑', g2.startsWith('[ok git status]'), g2);
-  const g3 = await ops.git({ path: selfRepo, mode: 'log', maxLines: 5 });
+  const g3 = await git({ path: selfRepo, mode: 'log', maxLines: 5 });
   check('git log 有界返回', g3.startsWith('[ok git log]') || g3.startsWith('[err E_GIT]'), g3);
 
   // ── ops_batch ──────────────────────────────────────────────────────────
@@ -153,7 +159,7 @@ try {
   const base = `http://127.0.0.1:${port}`;
 
   try {
-    const h = await ops.fetchUrl({ url: `${base}/html` });
+    const h = await fetchTool({ url: `${base}/html` });
     check(
       'fetch 剥标签、留标题、解实体',
       h.startsWith('[ok fetch]') && h.includes('测试页') && h.includes('正文 & 实体'),
@@ -161,26 +167,138 @@ try {
     );
     check('fetch 丢掉 script/nav 里的内容', !h.includes('secret') && !h.includes('导航菜单'), h);
 
-    const j = await ops.fetchUrl({ url: `${base}/json` });
+    const j = await fetchTool({ url: `${base}/json` });
     check('fetch JSON 自动格式化', j.includes('"a": 1'), j);
 
-    const big = await ops.fetchUrl({ url: `${base}/big`, maxChars: 200 });
+    const big = await fetchTool({ url: `${base}/big`, maxChars: 200 });
     check('fetch 正文按 maxChars 封顶并给 next', big.includes('[next]') && big.length < 600, `${big.length} 字符`);
 
-    const missing = await ops.fetchUrl({ url: `${base}/nope` });
+    const missing = await fetchTool({ url: `${base}/nope` });
     check('fetch 4xx 明确标注', missing.includes('[note] HTTP 404'), missing);
 
-    const badScheme = await ops.fetchUrl({ url: 'file:///C:/Windows/win.ini' });
+    const badScheme = await fetchTool({ url: 'file:///C:/Windows/win.ini' });
     check('fetch 非 http(s) 回 E_INPUT', badScheme.startsWith('[err E_INPUT]'), badScheme);
 
-    const rawHtml = await ops.fetchUrl({ url: `${base}/html`, raw: true });
+    const rawHtml = await fetchTool({ url: `${base}/html`, raw: true });
     check('fetch raw=true 保留原始标签', rawHtml.includes('<h1>') && rawHtml.includes('<script>'), rawHtml.slice(0, 200));
 
-    const dead = await ops.fetchUrl({ url: 'http://127.0.0.1:1/x' });
+    const dead = await fetchTool({ url: 'http://127.0.0.1:1/x' });
     check('fetch 连不上回 E_FETCH', dead.startsWith('[err E_FETCH]'), dead);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+
+
+  // ── 新特性：find context / since ──────────────────────────────────────
+  const ctxDir = join(root, 'ctx');
+  mkdirSync(ctxDir, { recursive: true });
+  const ctxFile = join(ctxDir, 'ctx.txt');
+  writeFileSync(ctxFile, ['L1 前文', 'L2 前文', 'L3 命中标记', 'L4 后文', 'L5 后文'].join('\n'), 'utf8');
+  const fc = ops.find({ pattern: '命中标记', path: ctxDir, mode: 'content', context: 1 });
+  check(
+    'find context 带前后各一行',
+    fc.includes('ctx.txt:2') && fc.includes('ctx.txt:3>') && fc.includes('ctx.txt:4') && !fc.includes('ctx.txt:1 '),
+    fc,
+  );
+
+  const sinceRecent = ops.find({ pattern: '**/*.txt', path: ctxDir, mode: 'files', since: '10m' });
+  check('find since=10m 能看见刚写的文件', sinceRecent.includes('ctx.txt'), sinceRecent);
+  const sinceOld = ops.find({ pattern: '**/*.txt', path: ctxDir, mode: 'files', since: '1s' });
+  const sinceBad = ops.find({ pattern: 'x', path: ctxDir, mode: 'files', since: '一会儿以前' });
+  check('find since 看不懂时回 E_INPUT', sinceBad.startsWith('[err E_INPUT]'), sinceBad);
+
+  // ── 新特性：sh filter ─────────────────────────────────────────────────
+  const scriptPath = join(root, 'noisy.ps1');
+  writeFileSync(
+    scriptPath,
+    '1..400 | ForEach-Object { if ($_ -eq 200) { "ERROR key-line-200" } else { "noise line $_" } }',
+    'utf8',
+  );
+  const noisy = await ops.sh({ scriptPath });
+  check('sh 头尾截断会丢掉中间行', !noisy.includes('key-line-200'), '第 60 行不该出现（被截断）');
+  const filtered = await ops.sh({ scriptPath, filter: 'ERROR' });
+  check(
+    'sh filter 只留匹配行并报命中数',
+    filtered.includes('key-line-200') && filtered.includes('[filter] stdout 命中 1 行'),
+    filtered,
+  );
+  const filteredCtx = await ops.sh({ scriptPath, filter: 'ERROR', filterContext: 1 });
+  check('sh filterContext 带上相邻行', filteredCtx.includes('noise line 199') || filteredCtx.includes('noise line 201'), filteredCtx);
+  const badFilter = await ops.sh({ command: 'Write-Output ok', filter: '[[' });
+  check('sh filter 非法正则回 E_REGEX', badFilter.startsWith('[err E_REGEX]'), badFilter);
+
+  // ── 新特性：fetch POST / headers ──────────────────────────────────────
+  const postServer = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ method: req.method, auth: req.headers['x-token'] ?? '', body }));
+    });
+  });
+  await new Promise((resolve) => postServer.listen(0, '127.0.0.1', resolve));
+  const postPort = postServer.address().port;
+  try {
+    const posted = await fetchTool({
+      url: `http://127.0.0.1:${postPort}/echo`,
+      method: 'POST',
+      body: '{"ping":1}',
+      headers: ['X-Token: secret123'],
+    });
+    check('fetch POST 带 body 与自定义头', posted.includes('"method": "POST"') && posted.includes('secret123'), posted);
+    const getWithBody = await fetchTool({ url: `http://127.0.0.1:${postPort}/echo`, body: 'x' });
+    check('fetch GET 带 body 回 E_INPUT', getWithBody.startsWith('[err E_INPUT]'), getWithBody);
+    const badHeader = await fetchTool({ url: `http://127.0.0.1:${postPort}/echo`, headers: ['没有冒号'] });
+    check('fetch 请求头格式不对回 E_INPUT', badHeader.startsWith('[err E_INPUT]'), badHeader);
+  } finally {
+    await new Promise((resolve) => postServer.close(resolve));
+  }
+
+  // ── 新特性：batch from / $prev ────────────────────────────────────────
+  const fromBatch = await ops.batch({
+    finds: [{ pattern: '**/*.txt', path: ctxDir, mode: 'files' }],
+    reads: [{ from: '1' }],
+  });
+  check(
+    'batch 用 from 把 find 结果直接读掉',
+    fromBatch.includes('由 from 展开 1 次读') && fromBatch.includes('命中标记'),
+    fromBatch,
+  );
+  const prevBatch = await ops.batch({
+    finds: [{ pattern: 'ctx.txt', path: ctxDir, mode: 'files' }],
+    reads: [{ path: '$prev' }],
+  });
+  check('batch 用 $prev 传单个路径', prevBatch.includes('ctx.txt') && !prevBatch.includes('[err'), prevBatch);
+  const missingRef = await ops.batch({ reads: [{ from: '1' }] });
+  check('batch from 指向不存在的 finds 会报错', missingRef.includes('E_BATCH_REF'), missingRef);
+
+  // ── 新特性：read 拒绝二进制 ───────────────────────────────────────────
+  const binFile = join(root, 'blob.bin');
+  writeFileSync(binFile, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x00]));
+  const binRead = ops.read({ path: binFile });
+  check('read 二进制文件直接拒绝', binRead.startsWith('[err E_BINARY]'), binRead);
+
+  // ── 新特性：git add / commit / push（本地裸库当远端）──────────────────
+  const repoDir = join(root, 'gitcheck');
+  const bareDir = join(root, 'bare.git');
+  mkdirSync(repoDir, { recursive: true });
+  await execFileAsync('git', ['init', '--bare', '-q', bareDir]);
+  await execFileAsync('git', ['init', '-q'], { cwd: repoDir });
+  await execFileAsync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir });
+  await execFileAsync('git', ['config', 'user.name', 'test'], { cwd: repoDir });
+  await execFileAsync('git', ['remote', 'add', 'origin', bareDir], { cwd: repoDir });
+  writeFileSync(join(repoDir, 'a.txt'), 'hello\n', 'utf8');
+
+  const gAdd = await git({ path: repoDir, mode: 'add', all: true });
+  check('git add -A 暂存成功', gAdd.startsWith('[ok git add]') && gAdd.includes('a.txt'), gAdd);
+  const gCommitNoMsg = await git({ path: repoDir, mode: 'commit' });
+  check('git commit 缺 message 被拒', gCommitNoMsg.startsWith('[err E_INPUT]'), gCommitNoMsg);
+  const gCommit = await git({ path: repoDir, mode: 'commit', message: 'test: 首次提交' });
+  check('git commit 带 message 成功', gCommit.startsWith('[ok git commit]'), gCommit);
+  const gPush = await git({ path: repoDir, mode: 'push' });
+  check('git push 先打印计划再推', gPush.includes('[plan] 将推送') && gPush.includes('[ok git push]'), gPush);
+  const outside = await git({ path: repoDir, mode: 'add', paths: ['C:\\Windows\\win.ini'] });
+  check('git add 仓库外路径被拒', outside.startsWith('[err E_OUTSIDE]'), outside);
 
   // ── 安全边界 ───────────────────────────────────────────────────────────
   const d1 = ops.write({ path: 'C:\\Windows\\ops-should-not-write.txt', content: 'x' });

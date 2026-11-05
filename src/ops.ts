@@ -1,18 +1,23 @@
 /**
- * 六个工具的真实实现。
+ * 本机文件工具的真实实现：读、写、改、找、目录树、跑命令、批量。
  *
- * 三条硬规则（照 dsh-ops 的思路来的）：
+ * 三条硬规则：
  * 1. 输出永远封顶，截断必须明说，并给出续读指针——不能静默丢内容；
  * 2. 失败返回结构化错误码，不抛异常；副作用不明的要标 effect unknown；
  * 3. 扫描类结果被截断时明说「不是全部」，别让模型以为扫完了。
+ *
+ * ops_fetch 在 net.ts，ops_git 在 git.ts。
  */
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename as pathBasename, dirname, join, normalize, relative, resolve, sep } from 'node:path';
+import { basename as pathBasename, dirname, join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 
+import { isDeniedWriteTarget, resolvePath } from './paths.ts';
 import { bytes, clip, err, headTail, numbered, ok, oneLine, revision } from './text.ts';
+
+export { resolvePath } from './paths.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -33,33 +38,6 @@ const DEFAULT_SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.venv', 'venv', '__pycache__',
   '.next', 'target', '.pnpm', '.cache', 'coverage', '.idea', '.vs',
 ]);
-
-const FETCH_DEFAULT_CHARS = 6_000;
-const FETCH_MAX_CHARS = 30_000;
-const FETCH_MAX_BYTES = 8 * 1024 * 1024;
-const FETCH_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
-
-/** 拒绝改写系统目录：写到这些地方基本只会坏事。 */
-function isDeniedWriteTarget(abs: string): boolean {
-  const lower = abs.toLowerCase();
-  const roots = [
-    process.env.SystemRoot?.toLowerCase(),
-    process.env.ProgramFiles?.toLowerCase(),
-    process.env['ProgramFiles(x86)']?.toLowerCase(),
-    'c:\\windows',
-  ].filter((v): v is string => Boolean(v));
-  return roots.some((root) => lower === root || lower.startsWith(`${root}${sep}`));
-}
-
-/** 展开 ~ 与 %VAR%，统一成绝对路径。 */
-export function resolvePath(input: string): string {
-  let p = String(input ?? '').trim();
-  if (!p) return p;
-  p = p.replace(/^~(?=$|[\\/])/, homedir());
-  p = p.replace(/%([^%]+)%/g, (whole, name: string) => process.env[name] ?? whole);
-  return normalize(resolve(p));
-}
 
 function globToRegExp(glob: string): RegExp {
   const g = glob.replace(/\\/g, '/');
@@ -91,54 +69,6 @@ function globToRegExp(glob: string): RegExp {
 
 type FindMode = 'files' | 'content';
 
-/** 从 content-type 或 HTML meta 里猜字符集，猜不到按 UTF-8。 */
-function detectCharset(contentType: string, bytesBuf: Buffer): string {
-  const fromHeader = /charset=["']?([\w-]+)/i.exec(contentType);
-  if (fromHeader) return fromHeader[1].toLowerCase();
-  const head = bytesBuf.subarray(0, 4096).toString('latin1');
-  const fromMeta = /charset=["']?([\w-]+)/i.exec(head);
-  return fromMeta ? fromMeta[1].toLowerCase() : 'utf-8';
-}
-
-/** 按检测到的字符集解码；解不了就退 UTF-8，别因为编码把整次抓取废掉。 */
-function decodeBody(bytesBuf: Buffer, contentType: string): string {
-  const charset = detectCharset(contentType, bytesBuf);
-  try {
-    return new TextDecoder(charset, { fatal: false }).decode(bytesBuf);
-  } catch {
-    return new TextDecoder('utf-8', { fatal: false }).decode(bytesBuf);
-  }
-}
-
-/** 粗暴但够用的正文抽取：丢脚本/样式/导航/页脚，块标签转换行，解实体。 */
-function htmlToText(html: string): string {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|noscript|template|svg|canvas)\b[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|tr|section|article|h[1-6]|pre|blockquote|td|th)>/gi, '\n')
-    .replace(/<li\b[^>]*>/gi, '- ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#0?39;|&apos;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number(dec)))
-    .replace(/[ \t\u00a0]+/g, ' ')
-    .replace(/ *\n */g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-function htmlTitle(html: string): string {
-  const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
-  return m ? oneLine(htmlToText(m[1]), 120) : '';
-}
-
 interface FindQuery {
   pattern: string;
   mode: FindMode;
@@ -148,6 +78,24 @@ interface FindQuery {
   ignoreCase: boolean;
   maxResults: number;
   skip: number;
+  context: number;
+  sinceMs: number;
+}
+
+/** 解析 30m / 2h / 1d / 7d 或 ISO 时间，得到「不早于」的时间戳。 */
+function parseSince(raw: unknown): { ms: number } | { error: string } {
+  const text = String(raw ?? '').trim();
+  if (!text) return { ms: 0 };
+  const rel = /^(\d+)\s*(s|m|h|d|w)$/i.exec(text);
+  if (rel) {
+    const n = Number(rel[1]);
+    const unit = rel[2].toLowerCase();
+    const factor: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+    return { ms: Date.now() - n * factor[unit] };
+  }
+  const abs = Date.parse(text);
+  if (Number.isFinite(abs)) return { ms: abs };
+  return { error: `since 看不懂：${oneLine(text, 40)}` };
 }
 
 interface WalkEntry {
@@ -185,7 +133,16 @@ export class Ops {
         const listing = entries.map((e) => `${e.isDirectory() ? 'dir ' : 'file'} ${e.name}`);
         return [ok('read', `这是目录，共 ${entries.length} 项（最多列 200）`), ...listing].join('\n');
       }
-      const raw = readFileSync(abs, 'utf8');
+      const buf = readFileSync(abs);
+      const probe = buf.subarray(0, 8192);
+      if (probe.includes(0)) {
+        return err(
+          'E_BINARY',
+          `${abs} 看起来是二进制文件（${(buf.byteLength / 1024).toFixed(1)} KB，前 8 KB 里含 0 字节）`,
+          '文本工具读不了它；看图/PDF 请用支持多模态的工具，或先转成文本再读',
+        );
+      }
+      const raw = buf.toString('utf8');
       const lines = raw.split(/\r?\n/);
       const total = lines.length;
       const rev = revision(raw);
@@ -318,12 +275,19 @@ export class Ops {
 
   // ── ops_find ────────────────────────────────────────────────────────────
   find(args: Record<string, unknown>): string {
+    return this.findCore(args).text;
+  }
+
+  /** 找文件/找内容，同时把命中的绝对路径带出来（batch 的 from 靠它）。 */
+  findCore(args: Record<string, unknown>): { text: string; paths: string[] } {
     const pattern = String(args.pattern ?? '').trim();
-    if (!pattern) return err('E_INPUT', 'pattern 不能为空', 'files 模式给 glob，content 模式给正则');
+    if (!pattern) {
+      return { text: err('E_INPUT', 'pattern 不能为空', 'files 模式给 glob，content 模式给正则'), paths: [] };
+    }
     const modeRaw = String(args.mode ?? 'content').toLowerCase();
     const mode: FindMode = modeRaw === 'files' ? 'files' : 'content';
     const root = resolvePath(String(args.path ?? '').trim() || homedir());
-    if (!existsSync(root)) return err('E_PATH', `搜索根目录不存在：${root}`);
+    if (!existsSync(root)) return { text: err('E_PATH', `搜索根目录不存在：${root}`), paths: [] };
 
     const globsRaw = Array.isArray(args.globs) ? (args.globs as unknown[]).map((g) => String(g)) : [];
     const includes = globsRaw.filter((g) => !g.startsWith('!')).map(globToRegExp);
@@ -339,7 +303,10 @@ export class Ops {
         const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8')) as { s?: number };
         skip = Number(decoded.s ?? 0) || 0;
       } catch {
-        return err('E_CURSOR', `cursor 解析不了：${oneLine(cursor, 40)}`, '不传 cursor 重新搜，或原样回传上一页的 nextCursor');
+        return {
+          text: err('E_CURSOR', `cursor 解析不了：${oneLine(cursor, 40)}`, '不传 cursor 重新搜，或原样回传上一页的 nextCursor'),
+          paths: [],
+        };
       }
     }
 
@@ -347,60 +314,79 @@ export class Ops {
     const maxResults = Number.isFinite(maxRaw)
       ? Math.min(Math.max(Math.trunc(maxRaw), 1), FIND_MAX_RESULTS)
       : FIND_DEFAULT_RESULTS;
-    const ignoreCase = args.ignoreCase === true;
+    const ctxRaw = Number(args.context ?? 0);
+    const context = Number.isFinite(ctxRaw) ? Math.min(Math.max(Math.trunc(ctxRaw), 0), 10) : 0;
+    const sinceParsed = parseSince(args.since);
+    if ('error' in sinceParsed) {
+      return {
+        text: err('E_INPUT', sinceParsed.error, '支持 30m / 2h / 1d / 7d，或 ISO 时间（2026-11-06T00:00:00）'),
+        paths: [],
+      };
+    }
 
-    const files = this.walk(root);
     const query: FindQuery = {
       pattern,
       mode,
       root,
       includes,
       excludes,
-      ignoreCase,
+      ignoreCase: args.ignoreCase === true,
       maxResults,
       skip,
+      context,
+      sinceMs: sinceParsed.ms,
     };
-    return mode === 'files'
-      ? this.findFiles(files, query)
-      : this.findContent(files, query);
+    const files = this.walk(root);
+    return mode === 'files' ? this.findFiles(files, query) : this.findContent(files, query);
   }
 
-  private findFiles(files: WalkEntry[], q: FindQuery): string {
+  private findFiles(files: WalkEntry[], q: FindQuery): { text: string; paths: string[] } {
     const matcher = q.includes[0] ?? globToRegExp(q.pattern);
     const hits = files.filter((f) => {
       const posix = f.rel.split(sep).join('/');
       if (!matcher.test(posix)) return false;
-      return !q.excludes.some((re) => re.test(posix));
+      if (q.excludes.some((re) => re.test(posix))) return false;
+      if (!q.sinceMs) return true;
+      try {
+        return statSync(f.abs).mtimeMs >= q.sinceMs;
+      } catch {
+        return false;
+      }
     });
     const page = hits.slice(q.skip, q.skip + q.maxResults);
+    const sinceText = q.sinceMs ? `，只看 ${new Date(q.sinceMs).toLocaleString()} 之后的改动` : '';
     const head = ok(
       'find files',
-      `${hits.length} 个文件匹配 ${oneLine(q.pattern, 40)}（扫描 ${files.length} 个条目，根 ${q.root}）`,
+      `${hits.length} 个文件匹配 ${oneLine(q.pattern, 40)}（扫描 ${files.length} 个条目，根 ${q.root}${sinceText}）`,
     );
-    const body = page.map((h) => h.rel);
-    const more = q.skip + page.length < hits.length;
     const tail: string[] = [];
-    if (more) {
+    if (q.skip + page.length < hits.length) {
       const nextCursor = Buffer.from(JSON.stringify({ s: q.skip + page.length }), 'utf8').toString('base64');
       tail.push(`[next] 还有 ${hits.length - q.skip - page.length} 个，用 cursor=${nextCursor}`);
     }
     if (files.length >= SCAN_MAX_FILES) {
       tail.push(`[note] 扫描在 ${SCAN_MAX_FILES} 个条目处停了，结果不是全部；缩小 path 或加 globs 再搜`);
     }
-    return [head, ...body, ...tail].join('\n');
+    return {
+      text: [head, ...page.map((h) => h.rel), ...tail].join('\n'),
+      paths: page.map((h) => join(q.root, h.rel)),
+    };
   }
 
-  private findContent(files: WalkEntry[], q: FindQuery): string {
+  private findContent(files: WalkEntry[], q: FindQuery): { text: string; paths: string[] } {
     let re: RegExp;
     try {
       re = new RegExp(q.pattern, q.ignoreCase ? 'i' : '');
     } catch (e) {
-      return err('E_REGEX', `正则不合法：${String((e as Error).message)}`, '转义特殊字符，或先按 files 模式定位文件');
+      return {
+        text: err('E_REGEX', `正则不合法：${String((e as Error).message)}`, '转义特殊字符，或先按 files 模式定位文件'),
+        paths: [],
+      };
     }
 
     const hits: string[] = [];
+    const hitFiles: string[] = [];
     let scanned = 0;
-    let filesWithHits = 0;
     let capped = false;
     for (const entry of files) {
       const posix = entry.rel.split(sep).join('/');
@@ -411,6 +397,7 @@ export class Ops {
       try {
         const stat = statSync(entry.abs);
         if (!stat.isFile() || stat.size > SCAN_MAX_FILE_BYTES) continue;
+        if (q.sinceMs && stat.mtimeMs < q.sinceMs) continue;
         const raw = readFileSync(entry.abs);
         if (raw.subarray(0, 8192).includes(0)) continue;
         text = raw.toString('utf8');
@@ -427,30 +414,42 @@ export class Ops {
           break;
         }
         if (hits.length < q.skip) continue;
-        hits.push(`${entry.rel}:${i + 1}: ${oneLine(lines[i], 160)}`);
+        if (q.context > 0) {
+          const from = Math.max(0, i - q.context);
+          const to = Math.min(lines.length - 1, i + q.context);
+          for (let j = from; j <= to; j++) {
+            hits.push(`${entry.rel}:${j + 1}${j === i ? '>' : ' '}${oneLine(lines[j], 160)}`);
+          }
+          hits.push('--');
+        } else {
+          hits.push(`${entry.rel}:${i + 1}: ${oneLine(lines[i], 160)}`);
+        }
         if (inFile >= MATCHES_PER_FILE) break;
       }
-      if (inFile > 0) filesWithHits += 1;
+      if (inFile > 0) hitFiles.push(entry.abs);
       if (capped) break;
     }
 
+    const sinceText = q.sinceMs ? `，只看 ${new Date(q.sinceMs).toLocaleString()} 之后改动过的` : '';
     const head = ok(
       'find content',
-      `${hits.length} 条命中 ${oneLine(q.pattern, 40)}（文件 ${filesWithHits} 个，扫描 ${scanned} 个文件）`,
+      `${hits.length} 条命中 ${oneLine(q.pattern, 40)}（文件 ${new Set(hitFiles).size} 个，扫描 ${scanned} 个文件`
+        + `${q.context ? `，每条带 ±${q.context} 行上下文` : ''}${sinceText}）`,
     );
     const tail: string[] = [];
     if (capped) {
       const nextCursor = Buffer.from(JSON.stringify({ s: q.skip + hits.length }), 'utf8').toString('base64');
       tail.push(`[next] 还有更多命中，用 cursor=${nextCursor} 接着翻`);
-      tail.push('[note] 结果是分页的，不是全部；每个文件最多给 ' + MATCHES_PER_FILE + ' 条');
+      tail.push(`[note] 结果是分页的，不是全部；每个文件最多给 ${MATCHES_PER_FILE} 条`);
     }
     if (files.length >= SCAN_MAX_FILES) {
       tail.push(`[note] 扫描在 ${SCAN_MAX_FILES} 个条目处停了，结果不是全部`);
     }
-    if (hits.length === 0) {
-      return [head, tail.join('\n') || '[next] 换个关键词，或把 mode 改成 files 先看目录里有什么'].join('\n');
-    }
-    return [head, ...hits, ...tail].join('\n');
+    const body = hits.length ? hits : [tail.join('\n') || '[next] 换个关键词，或把 mode 改成 files 先看目录里有什么'];
+    return {
+      text: [head, ...body, ...(hits.length ? tail : [])].join('\n'),
+      paths: [...new Set(hitFiles)],
+    };
   }
 
   private walk(root: string): WalkEntry[] {
@@ -503,16 +502,49 @@ export class Ops {
       return omitted ? text : clip(text, 10_000).text;
     };
 
+    // filter：只留匹配行（可选带上下文），因为关键行常在头尾之外。
+    const filterRaw = String(args.filter ?? '').trim();
+    let filterRe: RegExp | null = null;
+    if (filterRaw) {
+      try {
+        filterRe = new RegExp(filterRaw, 'i');
+      } catch (e) {
+        return err('E_REGEX', `filter 正则不合法：${String((e as Error).message)}`, '转义特殊字符，或先去掉 filter 看全量输出');
+      }
+    }
+    const ctxRaw = Number(args.filterContext ?? 0);
+    const filterContext = Number.isFinite(ctxRaw) ? Math.min(Math.max(Math.trunc(ctxRaw), 0), 20) : 0;
+    const notes: string[] = [];
+
+    const applyFilter = (raw: string, label: string): string => {
+      if (!filterRe || !raw) return limit(raw);
+      const lines = raw.replace(/\r\n/g, '\n').split('\n');
+      const matched: number[] = [];
+      for (let i = 0; i < lines.length; i++) if (filterRe.test(lines[i])) matched.push(i);
+      if (!matched.length) {
+        notes.push(`[filter] ${label} 没有一行匹配 /${filterRaw}/（共 ${lines.length} 行）；建议去掉 filter 再看`);
+        return '';
+      }
+      const keep = new Set<number>();
+      for (const i of matched) {
+        for (let j = Math.max(0, i - filterContext); j <= Math.min(lines.length - 1, i + filterContext); j++) keep.add(j);
+      }
+      const picked = [...keep].sort((a, b) => a - b).map((i) => (matched.includes(i) ? '>' : ' ') + lines[i]);
+      notes.push(`[filter] ${label} 命中 ${matched.length} 行 / 共 ${lines.length} 行`);
+      return limit(picked.join('\n'));
+    };
+
     try {
       const { stdout, stderr } = await execFileAsync(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', body],
         { cwd, timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
       );
-      const out = limit(String(stdout ?? ''));
-      const errText = limit(String(stderr ?? ''));
+      const out = applyFilter(String(stdout ?? ''), 'stdout');
+      const errText = applyFilter(String(stderr ?? ''), 'stderr');
       return [
         ok('sh', `退出码 0${scriptPath ? `（${pathBasename(scriptPath)}）` : ''}`),
+        ...notes,
         out ? `[stdout]\n${out}` : '',
         errText ? `[stderr]\n${errText}` : '',
       ].filter(Boolean).join('\n');
@@ -520,10 +552,10 @@ export class Ops {
       const failure = e as { code?: number | string; stdout?: string; stderr?: string; message?: string };
       const stderrText = String(failure.stderr ?? '');
       const errLines = stderrText.replace(/\r\n/g, '\n').split('\n').filter((l) => l.trim());
-      const parts = [err('E_EXIT', `退出码 ${failure.code ?? '?'}`, undefined, 'unknown')];
+      const parts = [err('E_EXIT', `退出码 ${failure.code ?? '?'}`, undefined, 'unknown'), ...notes];
       if (errLines.length) parts.push(`[stderr 末尾]\n${errLines.slice(-3).join('\n')}`);
-      if (failure.stdout) parts.push(`[stdout]\n${limit(String(failure.stdout))}`);
-      if (errLines.length > 3) parts.push(`[stderr 全文]\n${limit(stderrText)}`);
+      if (failure.stdout) parts.push(`[stdout]\n${applyFilter(String(failure.stdout), 'stdout')}`);
+      if (errLines.length > 3) parts.push(`[stderr 全文]\n${applyFilter(stderrText, 'stderr')}`);
       if (!errLines.length && failure.message) parts.push(clip(String(failure.message), 400).text);
       if (!failure.stdout && !errLines.length) {
         parts.push('[next] 命令可能没跑起来（引号/路径/执行策略）；先跑一条 echo ok 验证通道');
@@ -582,190 +614,27 @@ export class Ops {
     return [head, ...lines, ...tail].join('\n');
   }
 
-  // ── ops_git ─────────────────────────────────────────────────────────────
-  async git(args: Record<string, unknown>): Promise<string> {
-    const cwdRaw = String(args.path ?? '').trim();
-    const cwd = cwdRaw ? resolvePath(cwdRaw) : process.cwd();
-    if (!existsSync(cwd)) return err('E_PATH', `路径不存在：${cwd}`);
-    const modeRaw = String(args.mode ?? 'status').toLowerCase();
-    const mode = modeRaw === 'diff' || modeRaw === 'log' ? modeRaw : 'status';
-    const maxRaw = Number(args.maxLines ?? 80);
-    const maxLines = Number.isFinite(maxRaw) ? Math.min(Math.max(Math.trunc(maxRaw), 10), 400) : 80;
-
-    const run = async (argv: string[]): Promise<{ code: number; out: string; errText: string }> => {
-      try {
-        const { stdout } = await execFileAsync('git', argv, {
-          cwd,
-          timeout: 20_000,
-          maxBuffer: 8 * 1024 * 1024,
-          windowsHide: true,
-        });
-        return { code: 0, out: String(stdout ?? ''), errText: '' };
-      } catch (e) {
-        const failure = e as { code?: number; stdout?: string; stderr?: string; message?: string };
-        return {
-          code: typeof failure.code === 'number' ? failure.code : 1,
-          out: String(failure.stdout ?? ''),
-          errText: String(failure.stderr ?? failure.message ?? ''),
-        };
-      }
-    };
-
-    const inside = await run(['rev-parse', '--is-inside-work-tree']);
-    if (inside.code !== 0 || !inside.out.trim().startsWith('true')) {
-      return err('E_GIT', `${cwd} 不在 git 仓库里`, '给一个仓库内路径，或先确认这里是不是代码目录');
-    }
-
-    if (mode === 'status') {
-      const res = await run(['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '--untracked-files=normal']);
-      if (res.code !== 0) return err('E_GIT', `git status 失败：${oneLine(res.errText, 120)}`);
-      const rows = res.out.split('\n').filter((l) => l.trim());
-      if (!rows.length) return ok('git status', `${cwd} 干净，没有改动`);
-      const bucket = { M: 0, A: 0, D: 0, '??': 0, other: 0 } as Record<string, number>;
-      for (const row of rows) {
-        const code = row.slice(0, 2).trim();
-        if (code === 'M') bucket.M += 1;
-        else if (code === 'A') bucket.A += 1;
-        else if (code === 'D') bucket.D += 1;
-        else if (code === '??') bucket['??'] += 1;
-        else bucket.other += 1;
-      }
-      const limit = Math.min(rows.length, maxLines);
-      const tail = rows.length > limit ? [`[next] 还有 ${rows.length - limit} 条没列，用 maxLines 放大`] : [];
-      return [
-        ok('git status', `${rows.length} 项改动：改 ${bucket.M} · 新增 ${bucket.A} · 删 ${bucket.D} · 未跟踪 ${bucket['??']}${bucket.other ? ` · 其它 ${bucket.other}` : ''}`),
-        ...rows.slice(0, limit),
-        ...tail,
-      ].join('\n');
-    }
-
-    if (mode === 'log') {
-      const res = await run(['log', `-n${Math.min(maxLines, 50)}`, '--oneline', '--decorate']);
-      if (res.code !== 0) return err('E_GIT', `git log 失败：${oneLine(res.errText, 120)}`, '空仓库还没有提交');
-      return [ok('git log', `最近 ${res.out.split('\n').filter(Boolean).length} 条提交`), res.out.trim()].join('\n');
-    }
-
-    // diff
-    const staged = args.staged === true;
-    const stat = await run(['diff', ...(staged ? ['--cached'] : []), '--stat=120']);
-    const detail = await run(['diff', ...(staged ? ['--cached'] : []), '--no-color', '--unified=1']);
-    if (stat.code !== 0) return err('E_GIT', `git diff 失败：${oneLine(stat.errText, 120)}`);
-    const statLines = stat.out.trim() ? stat.out.trim().split('\n') : [];
-    if (!statLines.length) {
-      return ok('git diff', `${staged ? '暂存区' : '工作区'}没有文本改动（可能是新文件，用 mode=status 看）`);
-    }
-    const { text: body, omitted } = headTail(detail.out, Math.floor(maxLines / 2), Math.floor(maxLines / 2));
-    const tail: string[] = [];
-    if (omitted > 0) tail.push(`[note] diff 正文省略 ${omitted} 行，只看摘要就用这几行 stat`);
-    return [ok('git diff', `${staged ? '暂存区' : '工作区'}改动`), ...statLines, '', body, ...tail]
-      .filter((v) => v !== undefined)
-      .join('\n');
-  }
-
-  // ── ops_fetch ───────────────────────────────────────────────────────────
-  async fetchUrl(args: Record<string, unknown>): Promise<string> {
-    const url = String(args.url ?? '').trim();
-    if (!url) return err('E_INPUT', 'url 不能为空', '带 http(s):// 的完整地址');
-    if (!/^https?:\/\//i.test(url)) {
-      return err('E_INPUT', `url 必须以 http(s):// 开头：${oneLine(url, 60)}`, '例如 https://example.com');
-    }
-    const maxRaw = Number(args.maxChars ?? FETCH_DEFAULT_CHARS);
-    const maxChars = Number.isFinite(maxRaw)
-      ? Math.min(Math.max(Math.trunc(maxRaw), 400), FETCH_MAX_CHARS)
-      : FETCH_DEFAULT_CHARS;
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        redirect: 'follow',
-        signal: AbortSignal.timeout(20_000),
-        headers: {
-          'user-agent': FETCH_UA,
-          'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
-        },
-      });
-    } catch (e) {
-      const message = String((e as Error)?.message ?? e);
-      return err(
-        'E_FETCH',
-        `抓不到 ${oneLine(url, 80)}：${message}`,
-        '检查网络/代理；GitHub 这类站可能需要代理，DNS 被劫持时也会失败',
-      );
-    }
-
-    let buf: Buffer;
-    try {
-      buf = Buffer.from(await res.arrayBuffer());
-    } catch (e) {
-      return err('E_FETCH', `读响应体失败：${String((e as Error)?.message ?? e)}`);
-    }
-    if (buf.byteLength > FETCH_MAX_BYTES) {
-      return err(
-        'E_TOO_BIG',
-        `${oneLine(url, 80)} 返回 ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB，超过 ${FETCH_MAX_BYTES / 1024 / 1024} MB 上限`,
-        '用 ops_sh 的 curl 落到临时文件，再用 ops_read 分段读',
-      );
-    }
-
-    const type = res.headers.get('content-type') ?? '';
-    const body = decodeBody(buf, type);
-    const isHtml = /html/i.test(type) || /^\s*<(!doctype|html)/i.test(body.slice(0, 200));
-    const isJson = /json/i.test(type);
-
-    let text = body;
-    let title = '';
-    const raw = args.raw === true;
-    if (!raw && isHtml) {
-      title = htmlTitle(body);
-      text = htmlToText(body);
-    } else if (!raw && isJson) {
-      try {
-        text = JSON.stringify(JSON.parse(body), null, 2);
-      } catch {
-        /* 不是合法 JSON 就照原样给 */
-      }
-    }
-
-    const { text: clipped, total, truncated } = clip(text, maxChars);
-    const head = ok(
-      'fetch',
-      `${res.status} ${res.statusText || ''} ${type || '未知类型'} · 原始 ${(buf.byteLength / 1024).toFixed(1)} KB`
-        + ` · 正文 ${total} 字${isHtml ? '（已剥标签）' : isJson ? '（已格式化）' : ''}`,
-    );
-    const notes: string[] = [];
-    if (title) notes.push(`[title] ${title}`);
-    if (!text.trim()) {
-      notes.push('[note] 抽出来的正文是空的：可能要登录、全靠 JS 渲染，或返回的不是正文（可试 raw=true 看原始 HTML）');
-    }
-    if (res.status >= 400) {
-      notes.push(`[note] HTTP ${res.status}：这是错误页的正文，别当正常内容用`);
-    }
-    const tail: string[] = [];
-    if (truncated) {
-      tail.push(`[next] 正文 ${total} 字只给了 ${maxChars} 字；调大 maxChars（上限 ${FETCH_MAX_CHARS}），或换更具体的页面/接口`);
-    }
-    return [head, ...notes, clipped, ...tail].filter(Boolean).join('\n');
-  }
-
   // ── ops_batch ───────────────────────────────────────────────────────────
+  /**
+   * 一轮里顺序做多件事。执行顺序：finds → reads → patches → writes → shells。
+   *
+   * 传值：
+   * - `reads[i].from = 1`：把第 1 个 finds 找到的文件各读一次（`from: "prev"` = 上一个 finds）；
+   * - 字符串里的 `$1` / `$prev`：替换成对应步骤产出的路径；不唯一就报错，不猜。
+   */
   async batch(args: Record<string, unknown>): Promise<string> {
     const reads = Array.isArray(args.reads) ? (args.reads as Record<string, unknown>[]) : [];
     const patches = Array.isArray(args.patches) ? (args.patches as Record<string, unknown>[]) : [];
     const writes = Array.isArray(args.writes) ? (args.writes as Record<string, unknown>[]) : [];
     const finds = Array.isArray(args.finds) ? (args.finds as Record<string, unknown>[]) : [];
     const shells = Array.isArray(args.shells) ? (args.shells as Record<string, unknown>[]) : [];
-    const total = reads.length + patches.length + writes.length + finds.length + shells.length;
-    if (!total) {
-      return err(
-        'E_INPUT',
-        'reads / patches / writes / finds / shells 都是空的',
-        '至少给一项；单件事就直接用对应工具',
-      );
+
+    if (!reads.length && !patches.length && !writes.length && !finds.length && !shells.length) {
+      return err('E_INPUT', 'reads / patches / writes / finds / shells 都是空的', '至少给一项；单件事直接用对应工具');
     }
 
     const sections: string[] = [];
-    const counts = { read: 0, patch: 0, write: 0, find: 0, sh: 0, failed: 0 };
+    const counts = { read: 0, patch: 0, write: 0, find: 0, sh: 0, failed: 0, expanded: 0 };
     const perItem = 1_200;
 
     const push = (label: string, out: string): void => {
@@ -773,37 +642,111 @@ export class Ops {
       sections.push(`— ${label}\n${clip(out, perItem).text}`);
     };
 
-    for (const [i, item] of reads.entries()) {
-      counts.read += 1;
-      push(`read #${i + 1} ${oneLine(String(item.path ?? ''), 80)}`, this.read(item));
-    }
-    for (const [i, item] of patches.entries()) {
-      counts.patch += 1;
-      push(`patch #${i + 1} ${oneLine(String(item.path ?? ''), 80)}`, this.patch(item));
-    }
-    for (const [i, item] of writes.entries()) {
-      counts.write += 1;
-      push(`write #${i + 1} ${oneLine(String(item.path ?? ''), 80)}`, this.write(item));
-    }
+    const findPaths: string[][] = [];
+    let lastPaths: string[] = [];
+
+    /** 把 $N / $prev 换成路径；不唯一或没有就返回错误文案。 */
+    const substitute = (value: string, label: string): { text: string } | { error: string } => {
+      const m = /\$(prev|\d+)/.exec(value);
+      if (!m) return { text: value };
+      const key = m[1];
+      const list = key === 'prev' ? lastPaths : (findPaths[Number(key) - 1] ?? []);
+      if (!list.length) {
+        return { error: `${label}：$${key} 没有可用路径（${key === 'prev' ? '上一步没产出路径' : `第 ${key} 个 finds 没找到文件`}）` };
+      }
+      if (list.length > 1) {
+        return { error: `${label}：$${key} 产出 ${list.length} 个路径，单独引用不明确；用 reads.from 批量处理` };
+      }
+      return { text: value.replace(m[0], list[0]) };
+    };
+
+    const resolveItem = (item: Record<string, unknown>, label: string): Record<string, unknown> | string => {
+      const out: Record<string, unknown> = { ...item };
+      delete out.from;
+      for (const field of ['path', 'cwd', 'pattern', 'command']) {
+        const raw = out[field];
+        if (typeof raw !== 'string') continue;
+        const sub = substitute(raw, label);
+        if ('error' in sub) return sub.error;
+        out[field] = sub.text;
+      }
+      return out;
+    };
+
+    // 1) finds
     for (const [i, item] of finds.entries()) {
+      const label = `find #${i + 1} ${oneLine(String(item.pattern ?? ''), 60)}`;
+      const resolved = resolveItem(item, label);
+      if (typeof resolved === 'string') {
+        push(label, err('E_BATCH_REF', resolved));
+        findPaths.push([]);
+        lastPaths = [];
+        continue;
+      }
       counts.find += 1;
-      push(`find #${i + 1} ${oneLine(String(item.pattern ?? ''), 80)}`, this.find(item));
-    }
-    for (const [i, item] of shells.entries()) {
-      counts.sh += 1;
-      push(`sh #${i + 1} ${oneLine(String(item.command ?? ''), 80)}`, await this.sh(item));
+      const result = this.findCore(resolved);
+      push(label, result.text);
+      findPaths.push(result.paths);
+      lastPaths = result.paths;
     }
 
+    // 2) reads（支持 from）
+    const planned: Array<{ item: Record<string, unknown>; label: string }> = [];
+    for (const [i, item] of reads.entries()) {
+      if (item.from === undefined) {
+        planned.push({ item, label: `read #${i + 1} ${oneLine(String(item.path ?? ''), 60)}` });
+        continue;
+      }
+      const ref = String(item.from).replace('$', '').trim();
+      const list = ref === 'prev' ? lastPaths : (findPaths[Number(ref) - 1] ?? []);
+      if (!list.length) {
+        push(
+          `read #${i + 1} from=${ref}`,
+          err('E_BATCH_REF', `from=${item.from} 没有可用路径`, '确认那个 finds 找到了文件，或改成显式 path'),
+        );
+        continue;
+      }
+      for (const [j, pathValue] of list.slice(0, 20).entries()) {
+        counts.expanded += 1;
+        planned.push({ item: { ...item, path: pathValue, from: undefined }, label: `read #${i + 1}.${j + 1} ${pathValue}` });
+      }
+    }
+    for (const step of planned) {
+      counts.read += 1;
+      const resolved = resolveItem(step.item, step.label);
+      push(step.label, typeof resolved === 'string' ? err('E_BATCH_REF', resolved) : this.read(resolved));
+    }
+
+    // 3) patches / writes / shells
+    for (const [i, item] of patches.entries()) {
+      const label = `patch #${i + 1} ${oneLine(String(item.path ?? ''), 60)}`;
+      const resolved = resolveItem(item, label);
+      counts.patch += 1;
+      push(label, typeof resolved === 'string' ? err('E_BATCH_REF', resolved) : this.patch(resolved));
+    }
+    for (const [i, item] of writes.entries()) {
+      const label = `write #${i + 1} ${oneLine(String(item.path ?? ''), 60)}`;
+      const resolved = resolveItem(item, label);
+      counts.write += 1;
+      push(label, typeof resolved === 'string' ? err('E_BATCH_REF', resolved) : this.write(resolved));
+    }
+    for (const [i, item] of shells.entries()) {
+      const label = `sh #${i + 1} ${oneLine(String(item.command ?? ''), 60)}`;
+      const resolved = resolveItem(item, label);
+      counts.sh += 1;
+      push(label, typeof resolved === 'string' ? err('E_BATCH_REF', resolved) : await this.sh(resolved));
+    }
+
+    const total = counts.read + counts.patch + counts.write + counts.find + counts.sh + counts.failed;
     const head = ok(
       'batch',
-      `${total} 步：读 ${counts.read} · 改 ${counts.patch} · 写 ${counts.write} · 找 ${counts.find} · 命令 ${counts.sh}`
+      `${total} 步：找 ${counts.find} · 读 ${counts.read} · 改 ${counts.patch} · 写 ${counts.write} · 命令 ${counts.sh}`
+        + (counts.expanded ? ` · 由 from 展开 ${counts.expanded} 次读` : '')
         + (counts.failed ? ` · 失败 ${counts.failed}` : ''),
     );
     const merged = [head, ...sections].join('\n\n');
     const { text, truncated } = clip(merged, 14_000);
-    return truncated
-      ? `${text}\n[next] 批次输出被截断了：拆成两次 ops_batch，或用单工具缩小范围`
-      : text;
+    return truncated ? `${text}\n[next] 批次输出被截断了：拆成两次 ops_batch，或用单工具缩小范围` : text;
   }
 
   private lineOf(text: string, index: number): number {

@@ -20,8 +20,10 @@ export class OpsWorld implements World {
   private host: WorldHost | null = null;
   private readonly ops = new Ops();
   private readonly cache: ToolDef[];
+  private readonly opts: { dataDir: string; timezone: string };
 
-  constructor(readonly opts: { dataDir: string; timezone: string }) {
+  constructor(opts: { dataDir: string; timezone: string }) {
+    this.opts = opts;
     this.cache = buildTools(this.ops, DESCRIBE.tools);
   }
 

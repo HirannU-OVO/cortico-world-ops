@@ -27,12 +27,12 @@
 | `ops_read` | 读文本文件，带行号；同范围未变只回 `unchanged` | `offset`（1 起，负数从末尾）`limit`（150 / 2000）`maxBytes`（12000 / 64000）`fresh` |
 | `ops_write` | 写文件，自动建父目录；拒写系统目录 | `mode=overwrite\|append` |
 | `ops_patch` | 用一段原文精确替换；**不唯一就拒绝**并报出现次数与行号 | `old` `new`（空串=删除）`all` |
-| `ops_find` | `files` 按 glob 列文件 / `content` 按正则搜内容；分页 | `mode` `path` `globs`（`!` 排除）`ignoreCase` `maxResults`（60 / 500）`cursor` |
+| `ops_find` | `files` 按 glob 列文件 / `content` 按正则搜内容；分页 | `mode` `path` `globs`（`!` 排除）`ignoreCase` `maxResults`（60 / 500）`cursor` `context`（±行，0-10）`since`（`2h` / `1d` / ISO） |
 | `ops_tree` | 按深度看目录结构，自动跳过依赖/缓存目录 | `depth`（2 / 6）`maxEntries`（200 / 1000） |
-| `ops_git` | 只读 `status` / `diff` / `log`，输出有界 | `mode` `staged` `maxLines`（80 / 400） |
-| `ops_fetch` | 抓网页或接口：HTML 剥成正文、JSON 自动格式化、按字符封顶 | `url` `maxChars`（6000 / 30000）`raw` |
-| `ops_sh` | 跑 PowerShell 命令或 `.ps1`，返回 stdout/stderr/退出码 | `command` `scriptPath` `cwd` `timeoutMs`（60000 / 300000） |
-| `ops_batch` | **一轮里顺序做多件事**：读 / 改 / 写 / 搜 / 命令 | `reads[]` `patches[]` `writes[]` `finds[]` `shells[]` |
+| `ops_git` | `status` / `diff` / `log` 只读；`add` / `commit` / `push` 写仓库 | `mode` `staged` `maxLines`（80 / 400）`paths` `all` `message` |
+| `ops_fetch` | 抓网页或接口：HTML 剥成正文、JSON 自动格式化、按字符封顶 | `url` `maxChars`（6000 / 30000）`raw` `method` `body` `headers` |
+| `ops_sh` | 跑 PowerShell 命令或 `.ps1`，返回 stdout/stderr/退出码 | `command` `scriptPath` `cwd` `timeoutMs`（60000 / 300000）`filter`（正则只留匹配行）`filterContext` |
+| `ops_batch` | **一轮里顺序做多件事**：找 / 读 / 改 / 写 / 命令 | `reads[]`（可 `from` 引用 finds 结果）`patches[]` `writes[]` `finds[]` `shells[]` |
 
 ### 改代码的标准姿势
 
@@ -45,6 +45,8 @@ ops_git{mode:"diff"}          → 复查改了什么
 ```
 
 `ops_patch` 的 `old` 必须**逐字一致且全文件唯一**；被拒（`E_AMBIGUOUS`）就从上面多带两行上下文，确认要全换才加 `all=true`。
+
+`ops_find` 用 `context: 2` 就能直接把命中行前后两行一起看到，省掉「找到行号再读一轮」；`ops_batch` 里 `reads: [{ from: "1" }]` 可以把第 1 个 finds 找到的文件直接读掉，字符串参数还支持 `$1` / `$prev` 传单个路径。
 
 ### 回执长什么样
 

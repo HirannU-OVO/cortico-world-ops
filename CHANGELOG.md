@@ -14,6 +14,15 @@
 - **`ops_batch` 支持改代码**：除 `reads` / `finds` / `shells`，新增 `patches[]` 与 `writes[]`；逐条独立成败，一条失败不影响后续，汇总里给出「改 N / 写 M / 失败 K」。
 - **环境提示词**（`src/ENV_PROMPT.md`，`worlds.ops.envPrompt`）：随扩展注入一段用法约定——先 `ops_tree` 摸结构、改代码用 `ops_patch`、多文件一次 `ops_batch`、`[err E_XXX]` 照 `[next]` 改而不是原样重试。
 
+- **`ops_find` 加 `context` / `since`**：`context` 让每条命中的前后各带 N 行（省掉「找到行号再读一轮」）；`since` 只看某时间之后改动过的文件（`30m` / `2h` / `1d` / `7d` 或 ISO 时间）。
+- **`ops_batch` 支持步骤传值**：执行顺序改为 `finds → reads → patches → writes → shells`；`reads[i].from` 可直接读取某个 `finds` 找到的文件，字符串参数里可用 `$N` / `$prev` 引用唯一路径；引用不明确时报 `E_BATCH_REF` 而不是猜。
+- **`ops_sh` 加 `filter` / `filterContext`**：只保留匹配正则的行（可带前后 N 行），构建报错和日志的关键行常在头尾之外；命中数会单独报出来。
+- **`ops_fetch` 支持 `method` / `body` / `headers`**：可发 POST/PUT/PATCH/DELETE，能带自定义请求头（数组写法 `Name: value`），直接打本地接口做探活。
+- **`ops_git` 加写操作**：`add`（`all` 或 `paths`，路径必须落在仓库内，否则 `E_OUTSIDE`）、`commit`（`message` 必填，空则 `E_INPUT`；暂存区空则 `E_NOTHING`）、`push`（先打印将推的分支与远端、领先几个提交，再推）。
+- **`ops_read` 拒绝二进制**：前 8 KB 含 0 字节的文件直接回 `E_BINARY`，不再吐一屏乱码。
+- **结构调整**：`ops_fetch` 拆到 `src/net.ts`、`ops_git` 拆到 `src/git.ts`、路径工具拆到 `src/paths.ts`，单文件保持在 800 行以内。
+- **测试**：断言从 36 条加到 55 条，新增 `find context/since`、`sh filter`、`fetch POST/headers`、`batch from/$prev`、`read 二进制拒绝`、`git add/commit/push`（用本地裸库当远端，离线可跑）。
+
 ### 升级提示
 
 - 新增工具会进 schema。如果旧版 `cortico-world-devtools` 还开着，请关掉它，避免 `sh` / `fs_read` / `fs_write` / `web_fetch` 重复占字节。

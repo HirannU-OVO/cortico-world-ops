@@ -8,6 +8,8 @@ import { readFileSync } from 'node:fs';
 
 import type { ToolDef, ToolSpec } from 'cortico/core/types.ts';
 
+import { gitOp } from './git.ts';
+import { fetchUrl } from './net.ts';
 import { Ops } from './ops.ts';
 
 export interface OpsDescribe {
@@ -31,8 +33,8 @@ export function handlers(ops: Ops): Record<string, Handler> {
     ops_patch: (args) => ops.patch(args),
     ops_find: (args) => ops.find(args),
     ops_tree: (args) => ops.tree(args),
-    ops_git: (args) => ops.git(args),
-    ops_fetch: (args) => ops.fetchUrl(args),
+    ops_git: (args) => gitOp(args),
+    ops_fetch: (args) => fetchUrl(args),
     ops_sh: (args) => ops.sh(args),
     ops_batch: (args) => ops.batch(args),
   };
