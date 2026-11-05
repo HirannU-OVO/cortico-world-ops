@@ -304,7 +304,12 @@ try {
   const d1 = ops.write({ path: 'C:\\Windows\\ops-should-not-write.txt', content: 'x' });
   check('write 拒绝写系统目录', d1.startsWith('[err E_DENY]'), d1);
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  // Windows 上刚退出的子进程/杀软可能短暂占着句柄，重试几次再放弃清理。
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  } catch (e) {
+    console.warn(`\n[警告] 临时目录清理失败（断言结果不受影响）：${e?.code ?? e}`);
+  }
 }
 
 if (failures) {
