@@ -36,6 +36,9 @@
 - **新增 `missingDefaults()`**：内核只在 `worlds.<id>` **整段不存在**时才写入 `defaults()`（`world.ts:128` 用的是 `??=`），手写过 `{"enabled": true}` 的老部署因此拿不到默认值。激活时把缺的叶子项用 `ctx.persist()` 补上（不覆盖用户改过的项），同时本机 config 已直接补齐一份基线。
 - **测试**：73 条断言，新增「面板键带前缀」「只补缺失项不覆盖用户值」「全部就位时补丁为空」。
 
+- **`defaults()` 改成深拷贝**（`cloneDefaults()`）：内核会把 `defaults()` 的返回值当活配置写进 `worlds.ops`，原来用 `{ ...OPS_DEFAULTS }` 只是浅拷贝，嵌套对象被就地改掉后，同一进程里后续的默认值、`missingDefaults()` 兜底都会跟着变——看起来就像“用户改的值被覆盖”。现在每次返回全新一份。
+- **补两条断言**：用户把值设成 `0` 或 `envPrompt: off` 时不再补默认；`cloneDefaults()` 两次调用互不影响。
+
 ### 升级提示
 
 - 新增工具会进 schema。如果旧版 `cortico-world-devtools` 还开着，请关掉它，避免 `sh` / `fs_read` / `fs_write` / `web_fetch` 重复占字节。

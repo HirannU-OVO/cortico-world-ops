@@ -15,7 +15,7 @@ import { Ops } from '../src/ops.ts';
 import { gitOp as git } from '../src/git.ts';
 import { fetchUrl as fetchTool } from '../src/net.ts';
 import { readStashed, summarizeIfLong } from '../src/results.ts';
-import { resolveLimits, opsConfigGroup, missingDefaults } from '../src/config.ts';
+import { resolveLimits, opsConfigGroup, missingDefaults, cloneDefaults } from '../src/config.ts';
 import { OpsWorld } from '../src/definition.ts';
 
 const ops = new Ops();
@@ -387,6 +387,21 @@ try {
     JSON.stringify(partial),
   );
   check('全部就位时补丁为空', Object.keys(missingDefaults({ ...needAll, envPrompt: 'full' })).length === 0, '');
+
+  // 用户改过的不许被覆盖：0 和显式 false 也算「已设置」
+  const userSet = missingDefaults({ read: { lines: 0 }, sh: { head: 0, tail: 0 }, envPrompt: 'off' });
+  check(
+    '用户设成 0 / off 时不再补默认',
+    userSet.read?.lines === undefined && userSet.sh === undefined && userSet.envPrompt === undefined,
+    JSON.stringify(userSet),
+  );
+
+  // defaults() 必须是独立拷贝：内核会把返回值当活配置写
+  const a = cloneDefaults();
+  a.read.lines = 1;
+  a.result.page = 1;
+  const b = cloneDefaults();
+  check('defaults 深拷贝互不影响', b.read.lines === 100 && b.result.page === 3000, JSON.stringify(b));
 
   // ── 安全边界 ───────────────────────────────────────────────────────────
   const d1 = ops.write({ path: 'C:\\Windows\\ops-should-not-write.txt', content: 'x' });

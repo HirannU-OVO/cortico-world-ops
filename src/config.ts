@@ -34,6 +34,11 @@ export const OPS_DEFAULTS = {
   envPrompt: 'full' as const,
 };
 
+/** 深拷贝默认值：内核会把 defaults() 的返回值当活配置写，共享引用会被就地改掉。 */
+export function cloneDefaults(): OpsConfig {
+  return JSON.parse(JSON.stringify(OPS_DEFAULTS)) as OpsConfig;
+}
+
 const clamp = (v: unknown, lo: number, hi: number, fallback: number): number => {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
@@ -43,6 +48,7 @@ const clamp = (v: unknown, lo: number, hi: number, fallback: number): number => 
 /** 从活配置读出生效限制；越界一律夹紧，坏值回落默认。 */
 export function resolveLimits(cfg: OpsConfig | undefined): OpsLimits {
   const c = cfg ?? {};
+  const d = OPS_DEFAULTS;
   return {
     readLines: clamp(c.read?.lines, 20, 2_000, OPS_DEFAULTS.read.lines),
     readBytes: clamp(c.read?.bytes, 1_000, 64_000, OPS_DEFAULTS.read.bytes),
