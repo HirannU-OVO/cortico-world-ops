@@ -5,6 +5,7 @@ import type { WorldDefinition } from 'cortico/world.ts';
 
 import { cloneDefaults, missingDefaults, opsConfigGroup, promptBody, resolveLimits, type OpsConfig } from './config.ts';
 import { Ops, clearReadMemo } from './ops.ts';
+import { seedConfigFile } from './seed.ts';
 import { assertCoverage, buildTools, handlers, loadDescribe } from './tools.ts';
 import type { ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
 import type { Language } from 'cortico/core/language.ts';
@@ -22,12 +23,29 @@ export class OpsWorld implements World {
   private readonly cfg: OpsConfig;
   private readonly ops: Ops;
   private readonly cache: ToolDef[];
+  /** 补默认值的结果，留给 start() 记日志。 */
+  private seedNote = '';
 
-  constructor(opts: { cfg: OpsConfig }) {
+  constructor(opts: { cfg: OpsConfig; botDir?: string; persist?: (patch: unknown) => void }) {
     this.cfg = opts.cfg;
-    // 每次调用现读 cfg，面板改完即时生效。
     this.ops = new Ops(() => resolveLimits(this.cfg));
     this.cache = buildTools(this.ops, DESCRIBE.tools, this.cfg);
+
+    // 段已存在但缺项时自己补齐：内存立刻生效，文件也写回（内核只在整段缺失时种默认值）。
+    const patch = missingDefaults(this.cfg);
+    if (Object.keys(patch).length) {
+      try {
+        opts.persist?.(patch);
+      } catch {
+        /* 内核的 persist 在某些路径上只改内存，失败不影响内存对象本身 */
+      }
+      if (opts.botDir) {
+        const seeded = seedConfigFile(opts.botDir, { worlds: { ops: patch } });
+        this.seedNote = seeded.ok
+          ? `补齐默认项：${seeded.added.join(', ') || '无'}`
+          : `补齐默认项失败（${seeded.error ?? '未知原因'}），面板可能显示空值`;
+      }
+    }
   }
 
   /** off 时返回 null：内核会把本 World 的环境段整段省掉。 */
@@ -70,6 +88,7 @@ export class OpsWorld implements World {
     if (problems.length) {
       this.host?.log?.warn?.(`本机操作：describe.json 与实现不一致 —— ${problems.join('；')}`);
     }
+    if (this.seedNote) this.host?.log?.info?.(`本机操作：${this.seedNote}`);
     const limits = resolveLimits(this.cfg);
     this.host?.log?.info?.(
       `本机操作已就绪：${DESCRIBE.tools.length} 个工具；读 ${limits.readLines} 行 / 查 ${limits.findResults} 条`
@@ -88,13 +107,12 @@ export const OPS: WorldDefinition<OpsConfig> = {
   id: 'ops',
   label: '本机操作',
   defaults: () => cloneDefaults(),
-  create: (ctx) => {
-    // 已存在的 worlds.ops 段不会被自动补 defaults（内核只对缺失整段用 ??=），
-    // 这里补上缺的叶子项，否则面板一片空值。
-    const patch = missingDefaults(ctx.cfg as OpsConfig);
-    if (Object.keys(patch).length) ctx.persist(patch as never);
-    return new OpsWorld({ cfg: ctx.cfg as OpsConfig });
-  },
+  create: (ctx) =>
+    new OpsWorld({
+      cfg: ctx.cfg as OpsConfig,
+      botDir: ctx.botDir,
+      persist: (patch) => ctx.persist(patch as never),
+    }),
   describe: {
     // describe.json 就是发给模型的 schema，原样透传，不再二次加工。
     tools: DESCRIBE.tools.map((t) => ({

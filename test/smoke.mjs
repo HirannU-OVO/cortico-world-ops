@@ -15,7 +15,8 @@ import { Ops } from '../src/ops.ts';
 import { gitOp as git } from '../src/git.ts';
 import { fetchUrl as fetchTool } from '../src/net.ts';
 import { readStashed, summarizeIfLong } from '../src/results.ts';
-import { resolveLimits, opsConfigGroup, missingDefaults, cloneDefaults } from '../src/config.ts';
+import { resolveLimits, opsConfigGroup, missingDefaults, cloneDefaults, CONFIG_ITEMS } from '../src/config.ts';
+import { seedConfigFile } from '../src/seed.ts';
 import { OpsWorld } from '../src/definition.ts';
 
 const ops = new Ops();
@@ -402,6 +403,49 @@ try {
   a.result.page = 1;
   const b = cloneDefaults();
   check('defaults 深拷贝互不影响', b.read.lines === 100 && b.result.page === 3000, JSON.stringify(b));
+
+
+  // ── 新增配置项的自动覆盖（这次的重点）──────────────────────────────────
+  // 单一来源 CONFIG_ITEMS：schema 里每一项都必须有默认值，且缺项补丁必须覆盖它。
+  const allPatch = missingDefaults({});
+  const missingInPatch = CONFIG_ITEMS
+    .map((it) => it.path)
+    .filter((path) => {
+      let cur = allPatch;
+      for (const seg of path.split('.')) {
+        if (cur === null || typeof cur !== 'object') return true;
+        cur = cur[seg];
+      }
+      return cur === undefined;
+    });
+  check('每个配置项都有默认值补丁（加新项自动覆盖）', missingInPatch.length === 0, missingInPatch.join(','));
+
+  const unprefixed = CONFIG_ITEMS.filter((it) => !(`worlds.ops.${it.path}` in opsConfigGroup().schema.properties));
+  check('每个配置项都在面板 schema 里', unprefixed.length === 0, unprefixed.map((i) => i.path).join(','));
+
+  const badRange = CONFIG_ITEMS.filter((it) => typeof it.fallback === 'number'
+    && (typeof it.schema.minimum === 'number' ? it.fallback < it.schema.minimum : false
+      || typeof it.schema.maximum === 'number' ? it.fallback > it.schema.maximum : false));
+  check('默认值落在面板范围里', badRange.length === 0, badRange.map((i) => i.path).join(','));
+
+  // 落盘兜底：只补缺项，保留用户值与其它字段
+  const seedDir = join(root, 'seedtest');
+  mkdirSync(seedDir, { recursive: true });
+  const seedFile = join(seedDir, 'config.json');
+  writeFileSync(
+    seedFile,
+    JSON.stringify({ displayName: '测试', worlds: { ops: { enabled: true, read: { lines: 42 } } } }, null, 2),
+    'utf8',
+  );
+  const seeded = seedConfigFile(seedDir, { worlds: { ops: missingDefaults({ read: { lines: 42 } }) } });
+  const after = JSON.parse(readFileSync(seedFile, 'utf8'));
+  check('seedConfigFile 写回成功', seeded.ok && seeded.added.length > 0, JSON.stringify(seeded));
+  check('seed 保留用户已改的值', after.worlds.ops.read.lines === 42, JSON.stringify(after.worlds.ops.read));
+  check('seed 补上缺的项', after.worlds.ops.fetch?.chars === 3500 && after.worlds.ops.envPrompt === 'full', JSON.stringify(after.worlds.ops));
+  check('seed 不破坏其它字段', after.displayName === '测试' && after.worlds.ops.enabled === true, JSON.stringify(after).slice(0, 80));
+
+  const noPatch = seedConfigFile(seedDir, { worlds: { ops: {} } });
+  check('无缺项时不写文件', noPatch.ok && noPatch.added.length === 0, JSON.stringify(noPatch));
 
   // ── 安全边界 ───────────────────────────────────────────────────────────
   const d1 = ops.write({ path: 'C:\\Windows\\ops-should-not-write.txt', content: 'x' });

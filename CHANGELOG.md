@@ -39,6 +39,11 @@
 - **`defaults()` 改成深拷贝**（`cloneDefaults()`）：内核会把 `defaults()` 的返回值当活配置写进 `worlds.ops`，原来用 `{ ...OPS_DEFAULTS }` 只是浅拷贝，嵌套对象被就地改掉后，同一进程里后续的默认值、`missingDefaults()` 兜底都会跟着变——看起来就像“用户改的值被覆盖”。现在每次返回全新一份。
 - **补两条断言**：用户把值设成 `0` 或 `envPrompt: off` 时不再补默认；`cloneDefaults()` 两次调用互不影响。
 
+- **配置项改成单一来源 `CONFIG_ITEMS`**：面板 schema、`defaults()`、生效值解析、缺项补齐全部由这张表派生。以后**加一个配置项只改一处**，schema / 默认值 / 面板展示会一起跟上。
+- **核实了「加了新项会不会在面板缺失」**：不会。加载顺序是 `deepMerge(source.defaults(), 包内覆盖, 共享端点表, config.json)`（`build/cortico/src/deploy.ts:150`），`defaults()` 先铺底、部署文件后覆盖，所以代码里新增的默认值一定会在合并后的配置里出现，面板取得到；用户改过的值因为 `raw` 在最后一层，也不会被默认值盖掉。之前面板全空只有一个原因——schema 键少写了 `worlds.ops.` 前缀。
+- **补一层兜底 `missingDefaults()` + `seedConfigFile()`**：万一将来某个项只在面板声明、忘了写进 `defaults()`，激活时会把它补进内存并原子写回 `config.json`（只补 `undefined/null`，`0`/`false`/`off` 与其它字段不动）。正常情况下它是空操作。
+- **测试**：75 → 83 条，新增「每个配置项都有默认值补丁」「每项都在面板 schema 里」「默认值落在面板范围内」「seed 保留用户值 / 补缺项 / 不破坏其它字段」「无缺项不写文件」。
+
 ### 升级提示
 
 - 新增工具会进 schema。如果旧版 `cortico-world-devtools` 还开着，请关掉它，避免 `sh` / `fs_read` / `fs_write` / `web_fetch` 重复占字节。
