@@ -1,0 +1,69 @@
+{
+  "name": "cortico-world-ops",
+  "version": "0.2.1",
+  "type": "module",
+  "description": "给 Coopanion 桌宠一套有界、可批量的本机操作工具：读、写、改写、查找、跑命令。所有输出封顶并带续读指针，失败返回结构化错误码而不是抛异常。",
+  "license": "MIT",
+  "author": "HirannU",
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "world",
+    "ops",
+    "filesystem",
+    "shell",
+    "powershell",
+    "agent-tools",
+    "token-economy"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./src/index.ts",
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node scripts/check.mjs && node test/smoke.mjs"
+  },
+  "cortico": {
+    "kind": "world",
+    "api": 6,
+    "describe": "describe.json",
+    "displayName": "本机操作",
+    "icon": "icon.svg",
+    "tags": ["experimental",
+      "filesystem",
+      "shell",
+      "powershell"
+    ],
+    "locales": {
+      "zh": {
+        "displayName": "本机操作",
+        "description": "读、写、改写、查找、跑命令——有界输出，失败给错误码，不空转。"
+      },
+      "en": {
+        "displayName": "Local Ops",
+        "description": "Read, write, patch, find and run commands — bounded output, structured failures."
+      }
+    }
+  },
+  "files": [
+    "src",
+    "describe.json",
+    "README.md",
+    "CHANGELOG.md",
+    "icon.svg",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HirannU-OVO/cortico-world-ops.git"
+  },
+  "homepage": "https://github.com/HirannU-OVO/cortico-world-ops#readme",
+  "bugs": {
+    "url": "https://github.com/HirannU-OVO/cortico-world-ops/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
+}
