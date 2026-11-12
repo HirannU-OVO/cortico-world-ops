@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-ops",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "给 Coopanion 桌宠一套有界、可批量的本机操作工具：读、写、改写、查找、跑命令、看图与 Git 操作。所有输出封顶并带续读指针，失败返回结构化错误码而不是抛异常。",
   "license": "MIT",
@@ -34,16 +34,18 @@
     "displayName": "本机操作",
     "icon": "icon.svg",
     "tags": [
-      "unsafe"
+      "unsafe",
+      "internet",
+      "apps"
     ],
     "locales": {
       "zh": {
         "displayName": "本机操作",
-        "description": "读、写、改写、查找、跑命令与看图——有界输出，失败给错误码，不空转。"
+        "description": "让桌宠真能干活：翻文件、改代码、跑命令、抓网页、看图——每一步都有边界，出错给错误码。"
       },
       "en": {
         "displayName": "Local Ops",
-        "description": "Read, write, patch, find, run commands and inspect images — bounded output, structured failures."
+        "description": "Gives the pet real hands: read and edit files, search, run commands, fetch pages, inspect images — bounded at every step, failures come back as error codes."
       }
     }
   },
