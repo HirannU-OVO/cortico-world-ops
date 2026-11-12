@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { WorldDefinition } from 'cortico/world.ts';
 
-import { cloneDefaults, missingDefaults, opsConfigGroup, resolveLimits, type OpsConfig } from './config.ts';
+import { cloneDefaults, missingDefaults, opsConfigGroups, resolveLimits, type OpsConfig } from './config.ts';
 import { Ops, clearReadMemo } from './ops.ts';
 import { seedConfigFile } from './seed.ts';
 import { assertCoverage, buildTools, handlers, loadDescribe } from './tools.ts';
@@ -59,7 +59,7 @@ export class OpsWorld implements World {
 
   webUi(_language: Language = 'zh'): WorldWebUiDecl {
     return {
-      config: [opsConfigGroup()],
+      config: opsConfigGroups(),
       promptDocs: [
         {
           key: 'worlds.ops.envPrompt',

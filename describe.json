@@ -471,6 +471,33 @@
       }
     },
     {
+      "name": "ops_image",
+      "description": "读本机图片文件（jpg/png/gif/bmp/webp），字节随回执附上；面板配了看图模型时回执还会带 [vision] 文字描述。张数与大小上限可在面板「看图」分组调整。",
+      "tags": [
+        "read"
+      ],
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "图片文件绝对路径"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "可选，多张图片的绝对路径数组（最多 6 个）；和 path 同时给时会合并去重"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
       "name": "ops_result",
       "description": "取回被转存的长回执。回执里出现 [ref xxx] 且你要中间那段时用它，offset 从 0 起；不取也不影响继续干活。",
       "tags": [

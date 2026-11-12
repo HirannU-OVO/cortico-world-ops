@@ -14,9 +14,11 @@ import { fileURLToPath } from 'node:url';
 
 import { Ops } from '../src/ops.ts';
 import { gitOp as git } from '../src/git.ts';
+import { imageOp } from '../src/image.ts';
+import { buildTools, loadDescribe } from '../src/tools.ts';
 import { fetchUrl as fetchTool } from '../src/net.ts';
 import { readStashed, summarizeIfLong } from '../src/results.ts';
-import { resolveLimits, opsConfigGroup, missingDefaults, cloneDefaults, CONFIG_ITEMS } from '../src/config.ts';
+import { resolveLimits, opsConfigGroups, missingDefaults, cloneDefaults, CONFIG_ITEMS } from '../src/config.ts';
 import { seedConfigFile } from '../src/seed.ts';
 import { OpsWorld } from '../src/definition.ts';
 
@@ -283,6 +285,120 @@ try {
   const binRead = ops.read({ path: binFile });
   check('read 二进制文件直接拒绝', binRead.startsWith('[err E_BINARY]'), binRead);
 
+  // ── ops_image：读图并随回执附字节 ────────────────────────────────────────
+  // 1×1 真实 PNG（黑点），不是占位字节。
+  const PNG_1PX = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const pngFile = join(root, 'pixel.png');
+  writeFileSync(pngFile, PNG_1PX);
+
+  const img1 = await imageOp({ path: pngFile });
+  check(
+    'ops_image 附上单张图片',
+    typeof img1 === 'object' && img1.blobs?.length === 1
+      && img1.blobs[0].mime === 'image/png' && img1.text.startsWith('[ok image]'),
+    String(typeof img1 === 'object' ? img1.text : img1).slice(0, 120),
+  );
+
+  const img2 = await imageOp({ path: pngFile, paths: [pngFile, pngFile] });
+  check('ops_image 多路径去重合并', typeof img2 === 'object' && img2.blobs?.length === 1, String(typeof img2 === 'object' ? img2.text : img2));
+
+  const img3 = await imageOp({ path: join(root, 'missing.png') });
+  check('ops_image 缺文件回 E_PATH', typeof img3 === 'string' && img3.startsWith('[err E_PATH]'), img3);
+
+  const img4 = await imageOp({ path: join(root, 'blob.bin') });
+  check('ops_image 不认的扩展名回 E_MIME', typeof img4 === 'string' && img4.startsWith('[err E_MIME]'), img4);
+
+  const img5 = await imageOp({});
+  check('ops_image 空参数回 E_INPUT', typeof img5 === 'string' && img5.startsWith('[err E_INPUT]'), img5);
+
+  const img6 = await imageOp({ paths: [pngFile, join(root, 'missing.png')] });
+  check(
+    'ops_image 部分失败时好图照附、坏图说明',
+    typeof img6 === 'object' && img6.blobs?.length === 1 && img6.text.includes('[err E_PATH]'),
+    String(typeof img6 === 'object' ? img6.text : img6).slice(0, 120),
+  );
+
+  const pngA = join(root, 'a.png');
+  const pngB = join(root, 'b.png');
+  const pngC = join(root, 'c.png');
+  const pngD = join(root, 'd.png');
+  for (const p of [pngA, pngB, pngC, pngD]) writeFileSync(p, PNG_1PX);
+  const img7 = await imageOp({ paths: [pngA, pngB, pngC, pngD] }, resolveLimits({ image: { maxFiles: 2 } }));
+  check(
+    'ops_image 张数上限听面板值',
+    typeof img7 === 'string' && img7.includes('一次最多 2 张'),
+    String(typeof img7 === 'string' ? img7 : JSON.stringify(img7).slice(0, 120)),
+  );
+
+  // buildTools 接线：blobs 必须原样透传到宿主回执。
+  const wired = buildTools(new Ops(), loadDescribe().tools).find((t) => t.name === 'ops_image');
+  const wiredOut = await wired.handler({ path: pngFile });
+  check(
+    'buildTools 透传 blobs 到回执',
+    typeof wiredOut === 'object' && wiredOut.blobs?.length === 1 && typeof wiredOut.text === 'string',
+    String(typeof wiredOut === 'object' ? wiredOut.text : wiredOut).slice(0, 120),
+  );
+
+  // ── ops_image 图生文：面板配了看图模型时回执带 [vision] 描述 ──────────────
+  const visionSeen = { model: '', auth: '' };
+  const visionServer = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      let got = {};
+      try { got = JSON.parse(body); } catch { /* 坏请求按无图处理 */ }
+      const content = got?.messages?.[0]?.content;
+      const hasImg = Array.isArray(content)
+        && content.some((p) => p?.type === 'image_url' && String(p?.image_url?.url || '').startsWith('data:image/png;base64,'));
+      visionSeen.model = String(got?.model ?? '');
+      visionSeen.auth = String(req.headers.authorization ?? '');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content: hasImg ? '测试描述：一张黑点图' : 'no image part' } }] }));
+    });
+  });
+  await new Promise((resolve) => visionServer.listen(0, '127.0.0.1', resolve));
+  const visionPort = visionServer.address().port;
+  try {
+    const vLimits = resolveLimits({
+      image: { visionModel: 'test-vision', visionBaseUrl: `http://127.0.0.1:${visionPort}/v1`, visionKey: 'test-key' },
+    });
+    const imgV = await imageOp({ path: pngFile }, vLimits);
+    check(
+      'ops_image 配了看图模型回执带 [vision] 描述',
+      typeof imgV === 'object' && imgV.text.includes('[vision]') && imgV.text.includes('测试描述'),
+      String(typeof imgV === 'object' ? imgV.text : imgV).slice(0, 200),
+    );
+    check('看图请求带上模型名与密钥', visionSeen.model === 'test-vision' && visionSeen.auth === 'Bearer test-key', JSON.stringify(visionSeen));
+
+    // 面板密钥留空时回退环境变量 OPS_VISION_KEY。
+    process.env.OPS_VISION_KEY = 'env-key';
+    try {
+      const imgEnv = await imageOp(
+        { path: pngFile },
+        resolveLimits({ image: { visionModel: 'test-vision', visionBaseUrl: `http://127.0.0.1:${visionPort}/v1`, visionKey: '' } }),
+      );
+      check(
+        '看图密钥留空回退环境变量 OPS_VISION_KEY',
+        typeof imgEnv === 'object' && imgEnv.text.includes('[vision]') && visionSeen.auth === 'Bearer env-key',
+        `auth=${visionSeen.auth}`,
+      );
+    } finally {
+      delete process.env.OPS_VISION_KEY;
+    }
+
+    const imgNoV = await imageOp({ path: pngFile });
+    check(
+      'ops_image 没配看图模型不带 [vision]',
+      typeof imgNoV === 'object' && !imgNoV.text.includes('[vision]'),
+      String(typeof imgNoV === 'object' ? imgNoV.text : imgNoV).slice(0, 120),
+    );
+  } finally {
+    visionServer.close();
+  }
+
   // ── 新特性：git add / commit / push（本地裸库当远端）──────────────────
   const repoDir = join(root, 'gitcheck');
   const bareDir = join(root, 'bare.git');
@@ -331,6 +447,17 @@ try {
     clamped.readLines === 2000 && clamped.findResults === 5,
     JSON.stringify(clamped),
   );
+  const imgLimits = resolveLimits({ image: { maxMb: 30, maxTotalMb: 0, maxFiles: 99 } });
+  check(
+    '看图上限听面板值且越界夹紧',
+    imgLimits.imageMaxMb === 30 && imgLimits.imageMaxTotalMb === 1 && imgLimits.imageMaxFiles === 20,
+    JSON.stringify(imgLimits),
+  );
+  check(
+    '看图上限默认 15 MB / 40 MB / 6 张',
+    (() => { const d = resolveLimits(undefined); return d.imageMaxMb === 15 && d.imageMaxTotalMb === 40 && d.imageMaxFiles === 6; })(),
+    JSON.stringify(resolveLimits(undefined)),
+  );
 
   const longFile = join(root, 'long.txt');
   writeFileSync(longFile, Array.from({ length: 60 }, (_, i) => `row ${i + 1}`).join('\n'), 'utf8');
@@ -352,27 +479,36 @@ try {
   check('提示词模板正文包含 ops_batch', promptText.includes('ops_batch'), promptText.slice(0, 120));
   check('提示词模板不含占位符', !promptText.includes('{{'), promptText.slice(0, 120));
 
-  const group = opsConfigGroup();
-  const props = Object.keys(group.schema.properties);
+  const groups = opsConfigGroups();
+  const byKey = new Map(groups.flatMap((g) => Object.keys(g.schema.properties).map((k) => [k, g.schema.properties[k]])));
+  const props = [...byKey.keys()];
   check(
-    '面板声明齐全（键带 worlds.ops 前缀）',
-    group.owner === 'world:ops'
-      && props.includes('worlds.ops.read.lines')
-      && props.every((k) => k.startsWith('worlds.ops.'))
-      && props.length >= 8,
+    '面板按工具分组且键带 worlds.ops 前缀',
+    groups.length === 4
+      && groups.every((g) => g.owner === 'world:ops' && typeof g.schema.title === 'string' && g.schema.title)
+      && props.includes('worlds.ops.image.maxMb')
+      && props.every((k) => k.startsWith('worlds.ops.')),
     props.join(','),
   );
   check(
     '每个面板项都有标题',
-    props.every((k) => typeof group.schema.properties[k].title === 'string' && group.schema.properties[k].title.length > 0),
+    props.every((k) => typeof byKey.get(k).title === 'string' && byKey.get(k).title.length > 0),
     props.join(','),
+  );
+
+  // 入口转发：宿主从 index.ts 导入，转发里出现悬空导出名会在加载期炸掉。
+  const entry = await import('../src/index.ts');
+  check(
+    '入口 index.ts 可导入（转发导出名不悬空）',
+    typeof entry.Ops === 'function' && typeof entry.opsConfigGroups === 'function' && Array.isArray(entry.CONFIG_ITEMS),
+    Object.keys(entry).slice(0, 10).join(','),
   );
 
   // 已存在的段不会自动补默认（内核只用 ??=），所以要自己补：
   const needAll = missingDefaults({});
   check(
     '空配置时补丁覆盖全部项',
-    Object.keys(needAll).length === 5 && Object.keys(needAll.read).length === 2 && needAll.result.page === 3000,
+    Object.keys(needAll).length === 6 && Object.keys(needAll.read).length === 2 && needAll.result.page === 3000 && needAll.image?.visionModel === '',
     JSON.stringify(needAll),
   );
   const partial = missingDefaults({ read: { lines: 55 } });
@@ -414,7 +550,7 @@ try {
     });
   check('每个配置项都有默认值补丁（加新项自动覆盖）', missingInPatch.length === 0, missingInPatch.join(','));
 
-  const unprefixed = CONFIG_ITEMS.filter((it) => !(`worlds.ops.${it.path}` in opsConfigGroup().schema.properties));
+  const unprefixed = CONFIG_ITEMS.filter((it) => !groups.some((g) => `worlds.ops.${it.path}` in g.schema.properties));
   check('每个配置项都在面板 schema 里', unprefixed.length === 0, unprefixed.map((i) => i.path).join(','));
 
   const badRange = CONFIG_ITEMS.filter((it) => typeof it.fallback === 'number'

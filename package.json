@@ -1,8 +1,8 @@
 {
   "name": "cortico-world-ops",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
-  "description": "给 Coopanion 桌宠一套有界、可批量的本机操作工具：读、写、改写、查找、跑命令。所有输出封顶并带续读指针，失败返回结构化错误码而不是抛异常。",
+  "description": "给 Coopanion 桌宠一套有界、可批量的本机操作工具：读、写、改写、查找、跑命令、看图与 Git 操作。所有输出封顶并带续读指针，失败返回结构化错误码而不是抛异常。",
   "license": "MIT",
   "author": "HirannU",
   "keywords": [
@@ -19,6 +19,9 @@
   "engines": {
     "node": ">=22"
   },
+  "os": [
+    "win32"
+  ],
   "main": "./src/index.ts",
   "scripts": {
     "check": "node scripts/check.mjs",
@@ -30,19 +33,17 @@
     "describe": "describe.json",
     "displayName": "本机操作",
     "icon": "icon.svg",
-    "tags": ["experimental",
-      "filesystem",
-      "shell",
-      "powershell"
+    "tags": [
+      "unsafe"
     ],
     "locales": {
       "zh": {
         "displayName": "本机操作",
-        "description": "读、写、改写、查找、跑命令——有界输出，失败给错误码，不空转。"
+        "description": "读、写、改写、查找、跑命令与看图——有界输出，失败给错误码，不空转。"
       },
       "en": {
         "displayName": "Local Ops",
-        "description": "Read, write, patch, find and run commands — bounded output, structured failures."
+        "description": "Read, write, patch, find, run commands and inspect images — bounded output, structured failures."
       }
     }
   },

@@ -5,3 +5,16 @@ dist/
 .idea/
 .vscode/
 *.tsbuildinfo
+
+# Standard exclusions
+logs/
+data/
+cache/
+config.json
+
+# 本地备份与临时文件
+.bak/
+*.bak
+.tmp/
+*.tmp
+

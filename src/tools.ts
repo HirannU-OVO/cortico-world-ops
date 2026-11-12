@@ -6,10 +6,11 @@
  */
 import { readFileSync } from 'node:fs';
 
-import type { ToolDef, ToolSpec } from 'cortico/core/types.ts';
+import type { ToolDef, ToolOutcome, ToolSpec } from 'cortico/core/types.ts';
 
 import { resolveLimits, type OpsConfig, type OpsLimits } from './config.ts';
 import { gitOp } from './git.ts';
+import { imageOp } from './image.ts';
 import { fetchUrl } from './net.ts';
 import { Ops } from './ops.ts';
 import { readStashed, summarizeIfLong } from './results.ts';
@@ -25,7 +26,7 @@ export function loadDescribe(): OpsDescribe {
   return JSON.parse(readFileSync(file, 'utf8')) as OpsDescribe;
 }
 
-type Handler = (args: Record<string, unknown>) => Promise<string> | string;
+type Handler = (args: Record<string, unknown>) => Promise<string | ToolOutcome> | string | ToolOutcome;
 
 /** 工具名 → 实现。加工具时先改 describe.json，再在这里补一行。 */
 export function handlers(ops: Ops, limits: () => OpsLimits = () => resolveLimits(undefined)): Record<string, Handler> {
@@ -37,6 +38,7 @@ export function handlers(ops: Ops, limits: () => OpsLimits = () => resolveLimits
     ops_tree: (args) => ops.tree(args),
     ops_git: (args) => gitOp(args),
     ops_fetch: (args) => fetchUrl(args, limits()),
+    ops_image: (args) => imageOp(args, limits()),
     ops_sh: (args) => ops.sh(args),
     ops_batch: (args) => ops.batch(args),
     ops_result: (args) => readStashed(args, limits().resultPage),
@@ -69,7 +71,12 @@ export function buildTools(ops: Ops, decls: readonly ToolSpec[], cfg?: OpsConfig
         try {
           const out = await handler(args ?? {});
           // 长回执转存 + 摘要：历史里只留头尾，细节按需用 ops_result 取。
-          return summarizeIfLong(String(out ?? ''), decl.name, limits().stashAt);
+          // 对象返回值（ToolOutcome）保留 blobs（如 ops_image 附图），只对文本做转存。
+          if (typeof out !== 'string' && Array.isArray(out.blobs) && out.blobs.length > 0) {
+            return { text: summarizeIfLong(String(out.text ?? ''), decl.name, limits().stashAt), blobs: out.blobs } as ToolOutcome;
+          }
+          const text = typeof out === 'string' ? out : String(out.text ?? '');
+          return summarizeIfLong(text, decl.name, limits().stashAt);
         } catch (e) {
           // 兜底：任何未预期异常都变成结构化回执，别把主循环带崩。
           const message = String((e as Error)?.message ?? e);

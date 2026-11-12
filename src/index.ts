@@ -3,7 +3,7 @@ export { OPS as default } from './definition.ts';
 export { OpsWorld, type OpsConfig } from './definition.ts';
 export { loadDescribe, handlers, assertCoverage } from './tools.ts';
 export { Ops, clearReadMemo } from './ops.ts';
-export { CONFIG_ITEMS, cloneDefaults, opsConfigGroup, resolveLimits, missingDefaults } from './config.ts';
+export { CONFIG_ITEMS, cloneDefaults, opsConfigGroups, resolveLimits, missingDefaults } from './config.ts';
 export { seedConfigFile } from './seed.ts';
 export type { OpsConfig, OpsLimits } from './config.ts';
 export { resolvePath, isDeniedWriteTarget, isInside } from './paths.ts';

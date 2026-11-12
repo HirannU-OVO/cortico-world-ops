@@ -1,6 +1,6 @@
 # 本机操作 · cortico-world-ops
 
-给 [Coopanion](https://github.com/Pal-AI-Lab/Coopanion) 里的桌宠**一套会算账的工具**：读文件、改代码、找东西、看目录、看 git、跑命令——**输出永远封顶，失败给错误码，多件事能塞进一次调用**。
+给 [Coopanion](https://github.com/Pal-AI-Lab/Coopanion) 里的桌宠**一套会算账的工具**：读文件、改代码、找东西、看图、看目录、看 git、跑命令——**输出永远封顶，失败给错误码，多件事能塞进一次调用**。
 
 装上它之后，桌宠不用再「读一条 → 问一轮 → 再读一条」，也不用把 3 万字的文件整份吞进上下文。
 
@@ -20,17 +20,40 @@
 - 所有输出都有**字符/行数上限**，被截断时明确写出「还剩多少、怎么续读」，不静默丢内容；
 - 失败返回 `[err E_XXX]` + `[next]` 下一步，副作用不确定时标 `[effect unknown]`——**不鼓励模型原样重试**。
 
-## 十个工具
+---
+
+## 架构与工作流程
+
+```text
+Coopanion 桌宠 (大模型推理环境)
+  │  调用 ops_* 工具 (单次调用或 ops_batch 批量执行)
+  ▼
+cortico-world-ops (扩展核心调度层)
+  ├─ 安全防护：拒写系统核心目录 (%SystemRoot% / Program Files)
+  ├─ 缓冲与截断：字符与行数硬封顶，超限自动生成摘要并留存句柄
+  └─ 失败规范化：输出结构化错误码 [err E_XXX] 与 [next] 续行引导
+  ▼
+本机系统与运行环境
+  ├─ 本地文件系统 (node:fs) ── 读、写、正则查找、深度目录树
+  ├─ Git CLI (git.exe)     ── status / diff / log / add / commit
+  ├─ PowerShell (pwsh)     ── 受控脚本与系统命令执行
+  └─ 网络抓取 (node:fetch) ── 网页正文提取与接口格式化
+```
+
+---
+
+## 十一个工具
 
 | 工具 | 干什么 | 关键参数（默认 / 上限） |
 |---|---|---|
-| `ops_read` | 读文本文件，带行号；同范围未变只回 `unchanged` | `offset`（1 起，负数从末尾）`limit`（150 / 2000）`maxBytes`（12000 / 64000）`fresh` |
+| `ops_read` | 读文本文件，带行号；同范围未变只回 `unchanged` | `offset`（1 起，负数从末尾）`limit`（100 / 2000）`maxBytes`（8000 / 64000）`fresh` |
 | `ops_write` | 写文件，自动建父目录；拒写系统目录 | `mode=overwrite\|append` |
 | `ops_patch` | 用一段原文精确替换；**不唯一就拒绝**并报出现次数与行号 | `old` `new`（空串=删除）`all` |
-| `ops_find` | `files` 按 glob 列文件 / `content` 按正则搜内容；分页 | `mode` `path` `globs`（`!` 排除）`ignoreCase` `maxResults`（60 / 500）`cursor` `context`（±行，0-10）`since`（`2h` / `1d` / ISO） |
+| `ops_find` | `files` 按 glob 列文件 / `content` 按正则搜内容；分页 | `mode` `path` `globs`（`!` 排除）`ignoreCase` `maxResults`（30 / 500）`cursor` `context`（±行，0-10）`since`（`2h` / `1d` / ISO） |
 | `ops_tree` | 按深度看目录结构，自动跳过依赖/缓存目录 | `depth`（2 / 6）`maxEntries`（200 / 1000） |
 | `ops_git` | `status` / `diff` / `log` 只读；`add` / `commit` / `push` 写仓库 | `mode` `staged` `maxLines`（80 / 400）`paths` `all` `message` |
-| `ops_fetch` | 抓网页或接口：HTML 剥成正文、JSON 自动格式化、按字符封顶 | `url` `maxChars`（6000 / 30000）`raw` `method` `body` `headers` |
+| `ops_fetch` | 抓网页或接口：HTML 剥成正文、JSON 自动格式化、按字符封顶 | `url` `maxChars`（3500 / 30000）`raw` `method` `body` `headers` |
+| `ops_image` | 读本机图片（jpg/png/gif/bmp/webp）并随回执附上字节；面板配了看图模型时回执带 `[vision]` 文字描述，主脑不支持视觉也能看图 | `path` `paths[]`（张数 / 大小上限在面板「看图」分组调，默认 6 张 / 单张 15 MB / 总量 40 MB） |
 | `ops_sh` | 跑 PowerShell 命令或 `.ps1`，返回 stdout/stderr/退出码 | `command` `scriptPath` `cwd` `timeoutMs`（60000 / 300000）`filter`（正则只留匹配行）`filterContext` |
 | `ops_batch` | **一轮里顺序做多件事**：找 / 读 / 改 / 写 / 命令 | `reads[]`（可 `from` 引用 finds 结果）`patches[]` `writes[]` `finds[]` `shells[]` |
 | `ops_result` | 取回被转存的长回执（按 `offset` 分页） | `ref` `offset` `maxChars`（3000 / 12000） |
@@ -86,7 +109,7 @@ ops_git{mode:"diff"}          → 复查改了什么
 
 - 这些工具**以你自己的用户身份**在你机器上执行：**没有沙箱，没有审批弹窗**。`ops_sh` 能跑任何 PowerShell 命令，包括删文件、改注册表。
 - **只装你信得过的扩展**；不想用了在 World 列表里关掉即可。
-- 唯一的内置防线是：`ops_write` / `ops_patch` 拒绝写入 `%SystemRoot%`、`Program Files` 这类系统目录（`E_DENY`）；`ops_git` 只读，不会替你提交。
+- 唯一的内置防线是：`ops_write` / `ops_patch` 拒绝写入 `%SystemRoot%`、`Program Files` 这类系统目录（`E_DENY`）；`ops_git` 的 `status`/`diff`/`log` 均为只读，写操作（`add`/`commit`/`push`）需显式提供明确参数与 message，且拒绝跨仓库目录（`E_OUTSIDE`）。
 - 建议在人设/提示词里立规矩，例如「删东西、改系统设置、动别人文件之前先问人」。
 - 本扩展**没有遥测、没有后台任务、不往外传任何东西**，工具调用之外不碰你的文件。
 
@@ -130,18 +153,41 @@ pnpm install
 
 ## 配置参数速查
 
-扩展页的「本机操作」分组里能直接调；改完**即时生效**，不用重启。
+扩展页的配置按工具分成四组（读文件与查找 / 命令与抓网页 / 长回执转存 / 看图）；改完**即时生效**，不用重启。
+
+### 读文件与查找
 
 | 面板显示名 | 配置 id | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | 默认读多少行 | `read.lines` | 整数 | 100 | `ops_read` 不指定行数时读这么多 |
 | 单次读多少字节 | `read.bytes` | 整数 | 8000 | `ops_read` 单次读取的字节上限 |
 | 查找默认条数 | `find.maxResults` | 整数 | 30 | `ops_find` 默认返回多少条命中 |
+
+### 命令与抓网页
+
+| 面板显示名 | 配置 id | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
 | 命令输出留头 | `sh.head` | 整数 | 60 | `ops_sh` 保留命令输出开头多少行 |
 | 命令输出留尾 | `sh.tail` | 整数 | 20 | `ops_sh` 保留命令输出末尾多少行 |
 | 抓网页默认字数 | `fetch.chars` | 整数 | 3500 | `ops_fetch` 抓到的正文默认留多少字 |
+
+### 长回执转存
+
+| 面板显示名 | 配置 id | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
 | 超过多少字转存 | `result.stashAt` | 整数 | 4000 | 回执超过这个字数就压成摘要并留句柄 |
 | ops_result 单次取多少字 | `result.page` | 整数 | 3000 | `ops_result` 一次取回多少字 |
+
+### 看图（ops_image）
+
+| 面板显示名 | 配置 id | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| 看图模型 | `image.visionModel` | 字符串 | （空） | OpenAI 兼容接口的模型名；留空＝不启用图生文 |
+| 看图接口地址 | `image.visionBaseUrl` | 字符串 | （空） | OpenAI 兼容接口根地址（到 `/v1` 为止）；与看图模型同时填才生效 |
+| 看图密钥 | `image.visionKey` | 字符串 | （空） | 看图接口的 API 密钥，Bearer 方式携带；不想写进配置文件就留空，改用环境变量 `OPS_VISION_KEY`；本地服务可不填 |
+| 单张图片上限 | `image.maxMb` | 整数 | 15 | 单张图最大多少 MB，超了直接拒绝 |
+| 一次读图总量上限 | `image.maxTotalMb` | 整数 | 40 | 一次最多带多少 MB 的图，几张加起来超了就拒绝 |
+| 一次读几张图 | `image.maxFiles` | 整数 | 6 | `paths` 最多给几个，超了拒绝 |
 
 ### 环境提示词
 

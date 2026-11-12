@@ -19,6 +19,14 @@ export interface OpsConfig {
   sh?: { head?: number; tail?: number };
   fetch?: { chars?: number };
   result?: { stashAt?: number; page?: number };
+  image?: {
+    visionModel?: string;
+    visionBaseUrl?: string;
+    visionKey?: string;
+    maxMb?: number;
+    maxTotalMb?: number;
+    maxFiles?: number;
+  };
 }
 
 /** 解析后的生效值；缺项回落到默认。 */
@@ -31,6 +39,12 @@ export interface OpsLimits {
   fetchChars: number;
   stashAt: number;
   resultPage: number;
+  visionModel: string;
+  visionBaseUrl: string;
+  visionKey: string;
+  imageMaxMb: number;
+  imageMaxTotalMb: number;
+  imageMaxFiles: number;
 }
 
 interface ItemDef {
@@ -151,6 +165,73 @@ export const CONFIG_ITEMS: readonly ItemDef[] = [
       ...hot,
     },
   },
+  {
+    path: 'image.visionModel',
+    fallback: '',
+    schema: {
+      type: 'string',
+      title: '看图模型',
+      description:
+        '留空＝不启用图生文。填 OpenAI 兼容接口的模型名（如 gpt-4o-mini）；启用后 ops_image 会把图片发给它，回执附带文字描述，主脑不支持视觉也能看图。',
+    },
+  },
+  {
+    path: 'image.visionBaseUrl',
+    fallback: '',
+    schema: {
+      type: 'string',
+      title: '看图接口地址',
+      description: 'OpenAI 兼容接口的根地址（到 /v1 为止，如 https://api.openai.com/v1）；与看图模型同时填才生效。',
+    },
+  },
+  {
+    path: 'image.visionKey',
+    fallback: '',
+    schema: {
+      type: 'string',
+      title: '看图密钥',
+      description: '看图接口的 API 密钥，以 Bearer 方式携带；不想把密钥写进配置文件就留空，改用环境变量 OPS_VISION_KEY。本地服务可不填。',
+    },
+  },
+  {
+    path: 'image.maxMb',
+    fallback: 15,
+    schema: {
+      type: 'integer',
+      title: '单张图片上限',
+      description: 'ops_image 单张图最大多少 MB，超了直接拒绝。',
+      minimum: 1,
+      maximum: 100,
+      'x-suffix': 'MB',
+      ...hot,
+    },
+  },
+  {
+    path: 'image.maxTotalMb',
+    fallback: 40,
+    schema: {
+      type: 'integer',
+      title: '一次读图总量上限',
+      description: 'ops_image 一次最多带多少 MB 的图，几张加起来超了就拒绝。',
+      minimum: 1,
+      maximum: 200,
+      'x-suffix': 'MB',
+      ...hot,
+    },
+  },
+  {
+    path: 'image.maxFiles',
+    fallback: 6,
+    schema: {
+      type: 'integer',
+      title: '一次读几张图',
+      description: 'ops_image 的 paths 最多给几个，超了拒绝。',
+      minimum: 1,
+      maximum: 20,
+      'x-suffix': '张',
+      ...hot,
+    },
+  },
 ];
 
 /** 按路径取叶子值（同内核 getByPath 语义）。 */
@@ -198,6 +279,7 @@ const clamp = (v: unknown, lo: number, hi: number, fallback: number): number => 
 /** 从活配置读出生效限制；越界一律夹紧，坏值回落默认。 */
 export function resolveLimits(cfg: OpsConfig | undefined): OpsLimits {
   const c = cfg ?? {};
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
   return {
     readLines: clamp(c.read?.lines, 20, 2_000, defaultOf('read.lines')),
     readBytes: clamp(c.read?.bytes, 1_000, 64_000, defaultOf('read.bytes')),
@@ -207,35 +289,74 @@ export function resolveLimits(cfg: OpsConfig | undefined): OpsLimits {
     fetchChars: clamp(c.fetch?.chars, 500, 30_000, defaultOf('fetch.chars')),
     stashAt: clamp(c.result?.stashAt, 1_000, 20_000, defaultOf('result.stashAt')),
     resultPage: clamp(c.result?.page, 500, 12_000, defaultOf('result.page')),
+    visionModel: str(c.image?.visionModel),
+    visionBaseUrl: str(c.image?.visionBaseUrl).replace(/\/+$/, ''),
+    visionKey: str(c.image?.visionKey),
+    imageMaxMb: clamp(c.image?.maxMb, 1, 100, defaultOf('image.maxMb')),
+    imageMaxTotalMb: clamp(c.image?.maxTotalMb, 1, 200, defaultOf('image.maxTotalMb')),
+    imageMaxFiles: clamp(c.image?.maxFiles, 1, 20, defaultOf('image.maxFiles')),
   };
 }
 
-/** 面板里的「本机操作」一组：键自动带上 `worlds.ops.` 前缀。 */
-export function opsConfigGroup(): ConfigGroup {
-  const properties: Record<string, ConfigProperty> = {};
-  for (const item of CONFIG_ITEMS) properties[`worlds.ops.${item.path}`] = item.schema;
-  return {
-    id: 'ops',
-    owner: 'world:ops',
-    schema: {
-      type: 'object',
-      title: '本机操作',
-      description: '这些数字决定每次工具调用吐多少字。调小能省上下文，调大能一次看更多；改完即时生效。',
-      properties,
-    },
+/**
+ * 面板配置组：按工具分成小组，键自动带上 `worlds.ops.` 前缀。
+ * 分组是为了让普通用户扫一眼就知道每组管什么，不用在十几项里翻。
+ */
+export function opsConfigGroups(): ConfigGroup[] {
+  const prop = (path: string): ConfigProperty => {
+    const item = CONFIG_ITEMS.find((i) => i.path === path);
+    if (!item) throw new Error(`CONFIG_ITEMS 里没有 ${path}`);
+    return item.schema;
   };
+  const group = (id: string, title: string, description: string, paths: string[]): ConfigGroup => {
+    const properties: Record<string, ConfigProperty> = {};
+    for (const path of paths) properties[`worlds.ops.${path}`] = prop(path);
+    return {
+      id,
+      owner: 'world:ops',
+      schema: { type: 'object', title, description, properties },
+    };
+  };
+  return [
+    group(
+      'ops-read',
+      '读文件与查找',
+      '控制 ops_read / ops_find 每次吐多少内容：调小省上下文，调大一次看更多。',
+      ['read.lines', 'read.bytes', 'find.maxResults'],
+    ),
+    group(
+      'ops-shell',
+      '命令与抓网页',
+      '控制 ops_sh / ops_fetch 的输出长度：报错信息通常在末尾，留尾太小会看不到。',
+      ['sh.head', 'sh.tail', 'fetch.chars'],
+    ),
+    group(
+      'ops-result',
+      '长回执转存',
+      '工具回执太长时会自动压成「头尾摘要 + 引用」，这两项决定多长算长、取回时一次给多少。',
+      ['result.stashAt', 'result.page'],
+    ),
+    group(
+      'ops-image',
+      '看图（ops_image）',
+      '「看图模型」三项填了才会启用图生文（把图片发给它换文字描述）；下面三项决定一次能读多大的图。',
+      ['image.visionModel', 'image.visionBaseUrl', 'image.visionKey', 'image.maxMb', 'image.maxTotalMb', 'image.maxFiles'],
+    ),
+  ];
 }
 
 /**
  * 挑出配置里缺的项，拼成补丁（形状是 `worlds.ops` 段内的相对结构）。
  *
- * 只补 `undefined` / `null`（字符串再算上空串）：`0`、`false`、`off` 都算用户已设置，不覆盖。
+ * 数字项只补 `undefined` / `null` / 空串（`0`、`false` 都算用户已设置，不覆盖）；
+ * 字符串项以空串为合法值（如「看图模型」留空＝关闭），只有缺键才补。
  */
 export function missingDefaults(cfg: OpsConfig | undefined): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   for (const item of CONFIG_ITEMS) {
     const current = getPath(cfg ?? {}, item.path);
-    const absent = current === undefined || current === null || current === '';
+    const absent = current === undefined || current === null
+      || (typeof item.fallback === 'number' && current === '');
     if (absent) setPath(patch, item.path, item.fallback);
   }
   return patch;
